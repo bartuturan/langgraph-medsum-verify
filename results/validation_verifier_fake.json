@@ -1,0 +1,40 @@
+{
+  "n_pairs": 518,
+  "n_reviews": 274,
+  "base_rate_overclaim": 0.09266409266409266,
+  "auroc_overclaim": 0.6505319148936171,
+  "auprc_overclaim": 0.1365848333327091,
+  "auprc_baseline": 0.09266409266409266,
+  "precision": 0.2222222222222222,
+  "recall": 0.125,
+  "f1": 0.16,
+  "flag_rate": 0.052123552123552123,
+  "chosen_thresholds": [
+    {
+      "delta_level": 1
+    },
+    {
+      "delta_level": 1
+    },
+    {
+      "delta_level": 1
+    },
+    {
+      "delta_level": 1
+    },
+    {
+      "delta_level": 1
+    }
+  ],
+  "n_true_flips": 55,
+  "n_omissions": 269,
+  "auroc_direction": 0.5180286006128704,
+  "precision_direction": 0.3157894736842105,
+  "recall_direction": 0.10909090909090909,
+  "per_flag_rates": {
+    "direction_flip": 29,
+    "unsupported": 205,
+    "overclaim": 31
+  },
+  "gate_passed": true
+}

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "medsum-verify"
+version = "0.1.0"
+description = "Grounded verify-revise loop for medical multi-document summarization"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "numpy>=1.24",
+    "pysbd>=0.3.4",
+    "scipy>=1.10",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Heavy deps; installed on Kaggle, skipped for local CPU plumbing work.
+gpu = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "sentence-transformers>=2.7",
+    "langgraph>=0.2",
+]
+eval = [
+    "scikit-learn>=1.3",
+    "rouge-score>=0.1.2",
+]
+dev = [
+    "pytest>=7.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

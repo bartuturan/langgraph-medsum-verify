@@ -1,0 +1,20 @@
+{
+  "n_pairs": 518,
+  "n_reviews": 274,
+  "chosen_aggregation": {
+    "mean": 5
+  },
+  "rho_generated": 0.7056635738851648,
+  "p_generated": 3.063456676528962e-79,
+  "rho_target": 0.3263055460284041,
+  "p_target": 2.573356114912938e-14,
+  "rho_delta": 0.4338850438144379,
+  "p_delta": 3.4243612342082636e-25,
+  "n_overclaim": 48,
+  "base_rate": 0.09266409266409266,
+  "auroc": 0.7830452127659575,
+  "auprc": 0.4141689279836878,
+  "auprc_baseline": 0.09266409266409266,
+  "human_ceiling_rho": 0.9137764150546951,
+  "n_double_annotated": 36
+}
