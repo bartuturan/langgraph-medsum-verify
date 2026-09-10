@@ -38,7 +38,7 @@ class QwenWriter:
     model_name: str = WRITER_MODEL
     temperature: float = 0.0        # greedy: the shared draft must be reproducible
     seed: int = SEED
-    max_input_tokens: int = 8192
+    max_input_tokens: int = 10240
 
     def __post_init__(self) -> None:
         self._tok = None

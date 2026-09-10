@@ -24,7 +24,11 @@ __all__ = ["make_drafter", "make_verifier_node", "make_self_critic", "make_revis
 # --------------------------------------------------------------------------
 
 
-def make_drafter(writer: Writer, source_chars: int = 12000) -> Callable[[LoopState], dict]:
+# 20k chars is roughly 5k tokens, which fits ~85% of the selected dev reviews
+# whole. Median source is 11.2k chars; the 12k default was silently truncating
+# half of them, which would have meant the drafter never saw evidence the
+# verifier was later checking its claims against.
+def make_drafter(writer: Writer, source_chars: int = 20000) -> Callable[[LoopState], dict]:
     def drafter(state: LoopState) -> dict:
         # The paired design depends on all three conditions starting from the
         # same Round-0 text, so a pre-supplied draft is used as-is.
