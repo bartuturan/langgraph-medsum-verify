@@ -13,7 +13,7 @@ Expect roughly 2 hours end to end for 50 reviews.
 # only genuinely missing pieces.
 """
 !pip install -q pysbd langgraph
-!pip install -q git+https://github.com/USERNAME/medsum-verify.git
+!pip install -q git+https://github.com/bartuturan/langgraph-medsum-verify.git
 """
 
 # -------------------------------------------------------------- CELL 2 ----
