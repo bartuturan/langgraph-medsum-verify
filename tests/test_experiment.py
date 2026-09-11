@@ -206,3 +206,22 @@ def test_discard_rejects_unknown_or_missing_conditions(runner):
 
 def test_discard_on_an_empty_run_is_a_no_op(runner):
     assert runner.discard("grounded") == 0
+
+
+def test_run_survives_its_results_folder_disappearing(tmp_path, reviews):
+    """Regression: deleting results/ after the runner was built crashed the run.
+
+    The write that records a result raised FileNotFoundError -- including the
+    one inside the handler meant to record a failure -- so the whole notebook
+    cell died instead of logging and moving on.
+    """
+    import shutil
+
+    d = tmp_path / "results"
+    runner = ExperimentRunner(
+        FakeWriter(), Verifier(FakeFactChecker(), FakeRetriever()), results_dir=d
+    )
+    shutil.rmtree(d)
+    written = runner.run(reviews[:1], verbose=False)
+    assert len(written) == 3 and not any("error" in r for r in written)
+    assert len(load_results(d)) == 3, "results must land in the recreated folder"

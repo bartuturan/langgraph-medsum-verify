@@ -80,6 +80,10 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 def _append_jsonl(path: Path, record: dict) -> None:
+    # Recreate the folder if it vanished after the runner was built -- e.g. an
+    # `rm -rf results` run later in the notebook. Without this, even the code
+    # that records a failure raised FileNotFoundError and crashed the whole run.
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         fh.flush()
