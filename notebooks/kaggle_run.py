@@ -13,9 +13,16 @@ Expect roughly 3 hours end to end for 50 reviews.
 # -------------------------------------------------------------- CELL 1 ----
 # Install. Pin nothing that Kaggle already ships; pysbd and langgraph are the
 # only genuinely missing pieces.
+#
+# --force-reinstall: pip otherwise sees the same version number already
+# installed and silently keeps the old code, so a fix pushed to GitHub would
+# never arrive. --no-deps: everything else the package needs ships with Kaggle
+# or comes from the line above. If the package was already imported in this
+# session, restart the kernel after this cell (Run -> Restart) and continue
+# from Cell 2, or the old code stays loaded in memory.
 """
 !pip install -q pysbd langgraph
-!pip install -q git+https://github.com/bartuturan/langgraph-medsum-verify.git
+!pip install -q --force-reinstall --no-deps git+https://github.com/bartuturan/langgraph-medsum-verify.git
 """
 
 # -------------------------------------------------------------- CELL 2 ----

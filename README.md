@@ -148,10 +148,12 @@ anything to measure. The held-out judge loads only after the loop's models are
 freed. Kaggle T4s are sm75 — fp16, never bf16.
 
 MiniCheck is called through `transformers` directly rather than the `minicheck`
-package, using its documented format (`"predict: " + doc + <eos> + claim`, one
-zero decoder token, softmax over token ids `[3, 209]`). Those ids are
-undocumented in the model card and load-bearing, so the loader decodes them at
-startup and refuses to run if they are not `0`/`1`.
+package, using the format from MiniCheck's own inference code
+(`"predict: " + doc + <eos> + claim`, one zero decoder token, softmax over token
+ids `[3, 209]`). Those ids are the *first tokens* of the two labels: `"1"` is
+the single token `▁1` (209), while `"0"` splits into `▁` (3) + `0`. They are
+undocumented in the model card and load-bearing, so at startup the loader checks
+that `"0"` and `"1"` still begin with 3 and 209, and refuses to run if not.
 
 ## Running it
 
@@ -159,7 +161,7 @@ Local, CPU, no GPU and no model downloads — the whole loop runs against fakes:
 
 ```bash
 pip install -e ".[dev,eval]"
-pytest -q                                            # 124 tests
+pytest -q                                            # 129 tests
 python -m medsumverify.eval.validate_strength        # Result 1a
 python -m medsumverify.eval.validate_verifier --fake # Result 1, CPU lower bound
 ```
@@ -209,6 +211,6 @@ src/medsumverify/
   graph/      state, prompts, nodes, three LangGraph builds
   experiment/ runner with per-document JSONL checkpointing and resume
   eval/       validate_strength, validate_verifier, metrics, compare, holdout, audit_sheet
-tests/        124 tests, all CPU
+tests/        129 tests, all CPU
 notebooks/    kaggle_run.py (diffable) -> kaggle_run.ipynb
 ```
