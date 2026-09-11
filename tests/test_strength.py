@@ -139,3 +139,70 @@ def test_every_fixture_case_is_scoreable():
     for case in CASES:
         assert 0 <= score_strength(case.claim).level <= 3
         assert 0 <= score_strength(case.source).level <= 3
+
+
+# --------------------------------------------------------------------------
+# Clause-framing hedges: "the evidence suggests that ..."
+# --------------------------------------------------------------------------
+
+
+def test_frame_softens_by_one_step_instead_of_flattening():
+    """The blind spot found in Qwen's drafts.
+
+    Plain precedence let "suggests" outrank "significantly", so an overclaim
+    inside the frame scored 1 -- the same as a genuinely tentative claim.
+    """
+    bare = score_strength("Provider-initiated HIV testing significantly increases uptake.")
+    framed = score_strength(
+        "The evidence suggests that provider-initiated HIV testing significantly increases uptake."
+    )
+    assert bare.level == 3
+    assert framed.level == 2
+    assert framed.score < bare.score
+
+
+@pytest.mark.parametrize(
+    "clause,expected",
+    [
+        ("X significantly reduces mortality.", 2),
+        ("X reduces mortality.", 2),
+        ("X is associated with reduced mortality.", 1),
+        ("X may reduce mortality.", 1),
+        ("there is insufficient evidence to determine whether X reduces mortality.", 0),
+    ],
+)
+def test_frame_levels(clause, expected):
+    assert score_strength("The evidence suggests that " + clause).level == expected
+
+
+def test_framed_ladder_stays_strictly_monotone():
+    ladder = ["The evidence suggests that " + c for c in (
+        "X may reduce mortality.",
+        "X is associated with reduced mortality.",
+        "X reduces mortality.",
+        "X significantly reduces mortality.",
+    )]
+    scores = [score_strength(s).score for s in ladder]
+    assert scores == sorted(scores) and len(set(scores)) == len(scores), scores
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "It appears that X reduces mortality.",
+        "Results consistently suggest that X reduces mortality.",
+        "Pooled analyses suggest that X reduces mortality.",
+        "The data seem to show that X reduces mortality.",
+    ],
+)
+def test_frame_variants(sentence):
+    assert score_strength(sentence).level == 2
+
+
+def test_suggests_without_a_that_clause_is_still_a_plain_hedge():
+    assert score_strength("Pooled analysis suggests a reduction in mortality.").level == 1
+
+
+def test_frame_is_reported_in_the_cues():
+    sc = score_strength("The evidence suggests that X reduces mortality.")
+    assert sc.cues[0] == "the evidence suggests that"

@@ -61,13 +61,14 @@ used to judge anything.
 
 **Don't grade the loop on its own signals.** `grounded` optimizes MiniCheck
 support and its own strength delta against the abstracts. Scoring it on those
-would be circular. The primary metric is instead strength of the summary minus
-strength of the **Cochrane reviewer's own conclusion** — which no condition ever
-sees. Two tests enforce this structurally: loop code may not import the held-out
+would be circular. The primary metric is instead the distance, in either
+direction, between the summary's claim strength and that of the **Cochrane
+reviewer's own conclusion** — which no condition ever sees. Two tests enforce
+this structurally: loop code may not import the held-out
 NLI judge, and may not import the data modules that carry reference conclusions.
 
 **Anti-degeneracy guardrails.** A reviser that prepends "may" to every sentence
-wins the primary metric while destroying the summary. Direction accuracy,
+would erase every overclaim while destroying the summary. Direction accuracy,
 content overlap, hedge density and length are reported unconditionally, and a
 strength win with a guardrail drop is labelled a hedging artifact, not a win.
 
@@ -80,25 +81,43 @@ review and stratified by outcome. Aggregation chosen on training folds only.
 
 | | value |
 |---|---|
-| Spearman ρ vs human claim strength (generated summaries) | **+0.706** |
-| …vs human claim strength (reference conclusions) | +0.326 |
+| Spearman ρ vs human claim strength (generated summaries) | **+0.707** |
+| …vs human claim strength (reference conclusions) | +0.330 |
 | human–human ceiling (36 doubly-annotated pairs) | +0.914 |
-| overclaim detection AUROC | **0.783** |
-| overclaim detection AUPRC | 0.414 (baseline 0.093, **4.5× lift**) |
+| overclaim detection AUROC | **0.788** |
+| overclaim detection AUPRC | 0.415 (baseline 0.093, **4.5× lift**) |
 
-An unsupervised lexicon reaches ~77% of the achievable rank correlation.
+An unsupervised lexicon reaches ~77% of the achievable rank correlation. These
+are the numbers for the current scorer, which softens a clause-framing hedge
+("the evidence suggests that …") by one step instead of flattening the clause
+to "weak". That change was prompted by Qwen's drafts, not by this data, and it
+nudged every number here slightly up (ρ +0.706 → +0.707, AUROC 0.783 → 0.788):
+it does no harm on the annotated corpus, which rarely uses the frame. Whether it
+helps on Qwen's own text is for the blind audit to say.
 
-### Result 1 — the full verifier (CPU fakes; GPU run pending)
+### Result 1 — the full verifier, on a Kaggle T4
 
-With TF-IDF retrieval and a lexical-overlap stand-in for MiniCheck, the complete
-verifier scores AUROC 0.651 / AUPRC 0.137 — far below the strength-only number.
-**The gap is informative and localises the weak point**: strength-only compares
-the summary against the *reference conclusion*, which is exactly how the human
-label is defined, while the verifier compares it against the *source abstracts*.
-Individual trial abstracts state their own results confidently, so evidence
-strength reads high and masks overclaims — a single confident trial does not
-license a confident review-level conclusion. Real retrieval and MiniCheck are
-the deciding test; see "Known limitations".
+Real retrieval and MiniCheck over the same 518 summaries, with the first scorer
+(a re-run with the current scorer is pending):
+
+| | CPU stand-ins | **real models** | strength vs reference (1a) |
+|---|---|---|---|
+| overclaim AUROC | 0.651 | **0.708** | 0.788 |
+| overclaim AUPRC (baseline 0.093) | 0.137 | **0.160** | 0.415 |
+
+It passes the pre-registered gate (AUROC ≥ 0.65), but that number flatters it.
+AUROC measures how well the strength gap *ranks* summaries; the loop acts on
+*flags*, and at the fitted threshold the overclaim flag fires on 1.5% of
+summaries — 2 of the 48 human-judged overclaims caught (recall 4%, precision
+25%). 93% of all flags are MiniCheck's "unsupported" (685 of 733), and
+effect-direction flags sit at chance (AUROC 0.539 against the 55 true flips).
+
+**The gap to 1a localises the weak point**: 1a compares the summary with the
+*reference conclusion*, which is how the human label is defined, while the
+verifier compares it with the *source abstracts*. Individual trial abstracts
+state their own results confidently, so evidence strength reads high and masks
+overclaims — a single confident trial does not license a confident review-level
+conclusion. See "Known limitations".
 
 ### Base rates worth knowing before reading any of this
 
@@ -115,6 +134,21 @@ Measured on the annotation file, not assumed:
   direction at all), not flips. Only ~9% are genuine flips. Validating a flip
   detector against raw mismatch would measure the wrong thing, so the two are
   scored separately.
+
+### Qwen's drafts — the go/no-go
+
+On a 12-review probe Qwen overclaims in **5 of 12 drafts (42%, Wilson 95% CI
+19–68%)** — far above the corpus's 9%, so the distortion does occur — and
+underclaims in the other 7, for a mean shift of −0.29. It misjudges strength in
+both directions. That is why the primary comparison metric is `abs_delta`,
+miscalibration either way: under the signed delta, a reviser that pushed an
+already-weak claim weaker would score as a win. The switch was made after this
+probe and **before any comparison between conditions was run**.
+
+On all 50 experiment drafts, the first scorer's verifier raised 78 flags across
+94 claims: 57 unsupported, 14 direction, 7 overclaim. Most drafts open with "The
+evidence suggests that …", which that scorer read as "weak" whatever followed —
+the blind spot the current scorer fixes.
 
 ## Data
 
@@ -161,7 +195,7 @@ Local, CPU, no GPU and no model downloads — the whole loop runs against fakes:
 
 ```bash
 pip install -e ".[dev,eval]"
-pytest -q                                            # 140 tests
+pytest -q                                            # 158 tests
 python -m medsumverify.eval.validate_strength        # Result 1a
 python -m medsumverify.eval.validate_verifier --fake # Result 1, CPU lower bound
 ```
@@ -214,6 +248,6 @@ src/medsumverify/
   graph/      state, prompts, nodes, three LangGraph builds
   experiment/ runner with per-document JSONL checkpointing and resume
   eval/       validate_strength, validate_verifier, metrics, compare, holdout, audit_sheet
-tests/        140 tests, all CPU
+tests/        158 tests, all CPU
 notebooks/    kaggle_run.py (diffable) -> kaggle_run.ipynb
 ```

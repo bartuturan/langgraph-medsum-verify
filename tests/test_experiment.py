@@ -176,3 +176,33 @@ def test_success_is_never_rerun_even_after_an_earlier_failure(tmp_path, reviews)
     runner.run(reviews[:1], verbose=False)   # grounded fails
     runner.run(reviews[:1], verbose=False)   # grounded retried, succeeds
     assert runner.run(reviews[:1], verbose=False) == []
+
+
+# --------------------------------------------------------------------------
+# Redoing one condition after something it depends on changed
+# --------------------------------------------------------------------------
+
+
+def test_discard_redoes_only_that_condition_from_the_same_drafts(runner, reviews):
+    runner.run(reviews[:2], verbose=False)
+    drafts = runner._draft_cache()
+
+    assert runner.discard("grounded") == 2
+    assert {r["condition"] for r in load_results(runner.results_dir)} == {"plain", "selfcritique"}
+    assert runner._draft_cache() == drafts, "discard must not touch the cached drafts"
+    assert list(runner.results_dir.glob("experiment.jsonl.*.bak")), "no backup was written"
+
+    redo = runner.run(reviews[:2], verbose=False)
+    assert sorted(r["condition"] for r in redo) == ["grounded", "grounded"]
+    assert all(r["draft"] == drafts[r["review_id"]] for r in redo), "redo broke the pairing"
+
+
+def test_discard_rejects_unknown_or_missing_conditions(runner):
+    with pytest.raises(ValueError):
+        runner.discard("groundd")
+    with pytest.raises(ValueError):
+        runner.discard()
+
+
+def test_discard_on_an_empty_run_is_a_no_op(runner):
+    assert runner.discard("grounded") == 0

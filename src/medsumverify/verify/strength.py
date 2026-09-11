@@ -215,11 +215,59 @@ def _found(pattern: re.Pattern, text: str, drop_negated: bool = False) -> list[s
     return hits
 
 
+# A hedge that frames a whole clause -- "the evidence suggests that X reduces
+# Y" -- softens that clause by one step rather than flattening it to "weak".
+# Under plain precedence "suggests" outranked everything after it, so an
+# overclaim wrapped in the frame ("suggests that X significantly increases Y")
+# scored 1, while the same claim without the frame scored 3. Qwen opens most
+# drafts with exactly this frame, so the blind spot sat where the experiment's
+# overclaims are. A bare "suggests" with no "that" clause is still a hedge.
+FRAME_HEDGE = re.compile(
+    r"(?<!\w)(?:(?:the|this|these|our|current|available|pooled|overall)\s+)?"
+    r"(?:evidence|data|results?|findings|studies|trials?|review|"
+    r"analys[ie]s|meta-analys[ie]s)\s+"
+    r"(?:\w+ly\s+)?(?:suggests?|suggested|appears?|appeared|seems?|seemed)\s+"
+    r"(?:to\s+(?:show|indicate|suggest)\s+)?that(?!\w)"
+    r"|(?<!\w)it\s+(?:appears|appeared|seems|seemed)\s+that(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _framed(text: str) -> "StrengthScore | None":
+    """Score 'FRAME that CLAUSE' as the clause, one step softer. None if unframed."""
+    frame = FRAME_HEDGE.search(text)
+    if not frame:
+        return None
+    inner_text = text[frame.end():].strip(" ,;:")
+    if not inner_text:
+        return None
+    inner = score_strength(inner_text)
+    if inner.claim_type not in (ClaimType.FINDING, ClaimType.SUFFICIENCY):
+        return None
+    if inner.level >= 2:
+        level, score = inner.level - 1, inner.score - 1.0
+    else:
+        # Already weak or insufficient: the frame stacks like a second hedge
+        # but cannot push a weak claim down to "insufficient evidence".
+        level, score = inner.level, inner.score - (0.12 if inner.level == 1 else 0.0)
+    score = max(level - 0.49, min(level + 0.49, score))
+    return StrengthScore(level, round(score, 3), inner.claim_type,
+                         (frame.group(0).lower(), *inner.cues))
+
+
 def score_strength(sentence: str) -> StrengthScore:
-    """Score one sentence. Precedence: insufficiency > hedge > moderate > booster."""
+    """Score one sentence. Precedence: insufficiency > hedge > moderate > booster.
+
+    A clause-framing hedge ("the evidence suggests that ...") is handled first:
+    the clause is scored on its own and then softened by one step.
+    """
     text = (sentence or "").strip()
     if not text:
         return StrengthScore(0, 0.0, ClaimType.DESCRIPTIVE, ())
+
+    framed = _framed(text)
+    if framed is not None:
+        return framed
 
     ctype = classify(text)
 

@@ -112,3 +112,47 @@ def test_compare_refuses_to_report_on_too_little_data():
 
     with pytest.raises(RuntimeError):
         compare(records=[], verbose=False)
+
+
+def _records(target, plain, selfcritique, grounded, n=8):
+    out = []
+    for i in range(n):
+        for condition, summary in (("plain", plain), ("selfcritique", selfcritique),
+                                   ("grounded", grounded)):
+            out.append({"review_id": f"CD{i:04d}", "condition": condition,
+                        "summary": summary, "target": target})
+    return out
+
+
+def test_verdict_rewards_fixing_an_overclaim(tmp_path):
+    from medsumverify.eval.compare import compare
+
+    recs = _records(
+        target="Aspirin may reduce mortality.",
+        plain="Aspirin significantly reduces mortality.",
+        selfcritique="Aspirin significantly reduces mortality.",
+        grounded="Aspirin may reduce mortality.",
+    )
+    out = compare(recs, verbose=False, results_dir=tmp_path)
+    assert out["primary_metric"] == "abs_delta"
+    assert out["verdict"]["grounded_beats_plain"]
+
+
+def test_verdict_does_not_reward_pushing_a_weak_claim_weaker(tmp_path):
+    """The reason the primary metric is two-sided.
+
+    Plain already underclaims. Grounded hedges further, which *lowers* the
+    signed delta -- the old verdict counted that as a win. It moves the summary
+    further from the reviewer's conclusion, so abs_delta must call it a loss.
+    """
+    from medsumverify.eval.compare import compare
+
+    recs = _records(
+        target="Aspirin significantly reduces mortality.",
+        plain="Aspirin may reduce mortality.",
+        selfcritique="Aspirin may reduce mortality.",
+        grounded="Aspirin may possibly reduce mortality.",
+    )
+    out = compare(recs, verbose=False, results_dir=tmp_path)
+    assert out["verdict"]["signed_shift_grounded_vs_plain"]["mean_diff"] < 0, "setup: signed delta fell"
+    assert not out["verdict"]["grounded_beats_plain"]

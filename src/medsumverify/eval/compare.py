@@ -5,6 +5,15 @@ every comparison is within-review. Paired Wilcoxon signed-rank on the review
 level, Holm-corrected across the three contrasts, with bootstrap CIs on the
 paired differences.
 
+Primary metric: abs_delta -- how far the summary's claim strength sits from
+the Cochrane reviewer's own conclusion, in *either* direction. The first plan
+used the signed delta, which counts any drop in strength as a win. The
+go/no-go probe then showed Qwen both over- and underclaims (42% / 58% of
+drafts), and under a signed metric pushing an already-weak claim weaker would
+score as success. abs_delta was chosen at that point, before any comparison
+between conditions had been run. The signed delta and the overclaim rate are
+still reported, as the direction of the shift and the specific distortion.
+
 The reading of the result is fixed in advance:
 
   * grounded beats plain            -> the loop does something
@@ -14,12 +23,12 @@ The reading of the result is fixed in advance:
     grounded does not beat it       -> looping is what helps; the tools are not
                                        earning their keep
 
-and any strength win is discounted if the guardrails move the wrong way.
+and any win is discounted if the guardrails move the wrong way.
 
 The held-out NLI judge is a secondary check from a different model family. It
 is scored separately (eval/holdout.py, after the loop's models are freed) and
 picked up here from results/holdout_nli.json when present. Higher is better
-for it, unlike delta_strength.
+for it, unlike the strength metrics.
 """
 
 from __future__ import annotations
@@ -40,11 +49,12 @@ from .metrics import SummaryMetrics, score_summary
 
 __all__ = ["compare", "build_metric_table"]
 
-PRIMARY = "delta_strength"
+PRIMARY = "abs_delta"          # miscalibration in either direction
+SIGNED = "delta_strength"      # direction of the shift (>0 = stronger than the reviewer)
 HOLDOUT = "holdout_entailment"
-GUARDRAILS = ("direction_match", "content_f1", "n_words", "hedge_density", "abs_delta")
+GUARDRAILS = ("direction_match", "content_f1", "n_words", "hedge_density")
 CONTRASTS = (("grounded", "plain"), ("grounded", "selfcritique"), ("selfcritique", "plain"))
-TESTED = (PRIMARY, "abs_delta", "overclaims", "direction_match", "content_f1")
+TESTED = (PRIMARY, SIGNED, "overclaims", "direction_match", "content_f1")
 
 
 def build_metric_table(records: list[dict] | None = None) -> dict[str, dict[str, SummaryMetrics]]:
@@ -154,7 +164,7 @@ def compare(
     def col(condition: str, metric: str) -> np.ndarray:
         return np.array([float(getattr(table[r][condition], metric)) for r in reviews])
 
-    metrics = (PRIMARY, *GUARDRAILS, "overclaims")
+    metrics = (PRIMARY, SIGNED, "overclaims", *GUARDRAILS)
     descriptives = {
         c: {m: float(np.mean(col(c, m))) for m in metrics} for c in CONDITIONS
     }
@@ -182,6 +192,7 @@ def compare(
     out = {
         "n_reviews": len(reviews),
         "aggregation": "mean",
+        "primary_metric": PRIMARY,
         "descriptives": descriptives,
         "contrasts": [c.__dict__ for c in contrasts],
         "holdout": holdout_info,
@@ -202,34 +213,40 @@ def _verdict(descriptives: dict, contrasts: list[Contrast]) -> dict:
                 return c
         return None
 
+    def brief(c: Contrast | None) -> dict | None:
+        return None if c is None else {"mean_diff": c.mean_diff, "p_holm": c.p_holm}
+
     gp = get(PRIMARY, "grounded", "plain")
     gs = get(PRIMARY, "grounded", "selfcritique")
-    gh = get(HOLDOUT, "grounded", "plain")
     guard_ok = (
         descriptives["grounded"]["direction_match"] >= descriptives["plain"]["direction_match"] - 0.05
         and descriptives["grounded"]["content_f1"] >= descriptives["plain"]["content_f1"] - 0.05
     )
     return {
+        "primary_metric": PRIMARY,
+        # Lower miscalibration is better, so a win is a negative difference.
         "grounded_beats_plain": bool(gp and gp.p_holm < 0.05 and gp.mean_diff < 0),
         "grounded_beats_selfcritique": bool(gs and gs.p_holm < 0.05 and gs.mean_diff < 0),
         "guardrails_hold": bool(guard_ok),
+        "overclaims_grounded_vs_plain": brief(get("overclaims", "grounded", "plain")),
+        "signed_shift_grounded_vs_plain": brief(get(SIGNED, "grounded", "plain")),
         # Higher entailment is better, so a grounded win is a positive diff.
-        "holdout_grounded_vs_plain": (
-            None if gh is None else {"mean_diff": gh.mean_diff, "p_holm": gh.p_holm}
-        ),
+        "holdout_grounded_vs_plain": brief(get(HOLDOUT, "grounded", "plain")),
         "note": (
-            "A reduction in delta_strength counts only if guardrails_hold; "
-            "otherwise the reviser bought calibration with content."
+            "Primary is abs_delta, miscalibration in either direction, chosen after "
+            "the go/no-go probe showed Qwen both over- and underclaims and before any "
+            "comparison was run. A win counts only if guardrails_hold."
         ),
     }
 
 
 def _report(out: dict) -> str:
     L = ["=" * 78,
-         f"THREE-CONDITION COMPARISON   n={out['n_reviews']} reviews, paired",
+         f"THREE-CONDITION COMPARISON   n={out['n_reviews']} reviews, paired   "
+         f"primary: {out['primary_metric']}",
          "=" * 78, "",
          f"  {'metric':<20}" + "".join(f"{c:>16}" for c in CONDITIONS)]
-    for m in (PRIMARY, "abs_delta", "overclaims", "direction_match", "content_f1",
+    for m in (PRIMARY, SIGNED, "overclaims", "direction_match", "content_f1",
               "hedge_density", "n_words", HOLDOUT):
         if m not in out["descriptives"][CONDITIONS[0]]:
             continue
@@ -244,16 +261,19 @@ def _report(out: dict) -> str:
             f"p={c['p_holm']:.4f} rbc={c['effect_size']:+.2f}{n_note}"
         )
     v = out["verdict"]
-    h = v["holdout_grounded_vs_plain"]
-    holdout_line = (
-        "not run (notebook Cell 11)" if h is None
-        else f"diff={h['mean_diff']:+.3f}  p={h['p_holm']:.4f}  (higher = better)"
-    )
+
+    def line(d: dict | None, better: str) -> str:
+        if d is None:
+            return "not run (notebook Cell 11)"
+        return f"diff={d['mean_diff']:+.3f}  p={d['p_holm']:.4f}  ({better})"
+
     L += ["", "  verdict:",
-          f"    grounded beats plain ......... {v['grounded_beats_plain']}",
+          f"    grounded beats plain ......... {v['grounded_beats_plain']}   (on {v['primary_metric']})",
           f"    grounded beats self-critique . {v['grounded_beats_selfcritique']}",
           f"    guardrails hold .............. {v['guardrails_hold']}",
-          f"    held-out judge, grounded-plain {holdout_line}",
+          f"    overclaims, grounded-plain ... {line(v['overclaims_grounded_vs_plain'], 'lower = better')}",
+          f"    signed shift, grounded-plain . {line(v['signed_shift_grounded_vs_plain'], '<0 = weaker')}",
+          f"    held-out judge, grounded-plain {line(v['holdout_grounded_vs_plain'], 'higher = better')}",
           f"    {v['note']}", "=" * 78]
     return "\n".join(L)
 

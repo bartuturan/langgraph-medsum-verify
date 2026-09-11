@@ -150,6 +150,40 @@ class ExperimentRunner:
         """Conditions whose attempts so far have all failed; the next run retries them."""
         return {k for k in self._outcomes()[1] if k[1] in CONDITIONS}
 
+    def discard(self, *conditions: str) -> int:
+        """Drop every record of the given conditions so the next run redoes them.
+
+        For when something a condition depends on changes after it ran -- the
+        verifier and its scorer, which only the grounded condition uses. The
+        cached drafts are kept, so the redo starts from the identical Round-0
+        text and the pairing holds. The file is copied aside first, so nothing
+        is lost. Returns the number of records dropped.
+        """
+        unknown = set(conditions) - set(CONDITIONS)
+        if not conditions or unknown:
+            raise ValueError(f"expected one or more of {CONDITIONS}, got {conditions!r}")
+        if not self.results_path.exists():
+            return 0
+
+        import shutil
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = self.results_path.with_name(f"{self.results_path.name}.{stamp}.bak")
+        shutil.copy2(self.results_path, backup)
+
+        kept, dropped = [], 0
+        for r in _read_jsonl(self.results_path):
+            if r.get("condition") in conditions:
+                dropped += 1
+            else:
+                kept.append(r)
+        with open(self.results_path, "w", encoding="utf-8") as fh:
+            for r in kept:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"[discard] removed {dropped} record(s) for {', '.join(conditions)}; "
+              f"backup: {backup.name}")
+        return dropped
+
     # -- main loop ---------------------------------------------------------
 
     def run(

@@ -121,10 +121,12 @@ for r in smoke:
 # does the same, there is no distortion to measure and the experiment answers
 # nothing. Check the drafts before spending the GPU hours.
 #
-# Expect a positive mean delta. If it comes out strongly negative, the honest
-# move is to reframe the primary metric around |delta| (miscalibration in
-# either direction, already computed as abs_delta) and say so, rather than
-# reporting a null on a phenomenon that never occurred.
+# What matters is whether overclaiming happens often enough to measure, not
+# the sign of the mean: a few large underclaims can drag the mean below zero
+# while overclaiming is still common. (The first version of this cell judged
+# by the mean and misreported exactly that: 42% of drafts overclaimed.) Qwen
+# misjudges strength in both directions, which is why the comparison's primary
+# metric is abs_delta, miscalibration either way.
 """
 from medsumverify.eval.metrics import score_summary
 from medsumverify.experiment.run import ExperimentRunner, select_reviews
@@ -140,9 +142,11 @@ for rv in probe:
     print(f"{rv.review_id}  delta={m.delta_strength:+.2f}  {draft[:90]}")
 
 d = np.array(deltas)
-print(f"\nmean delta {d.mean():+.3f} | overclaim {np.mean(d > 0):.0%} | underclaim {np.mean(d < 0):.0%}")
-print("verdict:", "overclaims -- proceed as designed" if d.mean() > 0.1
-      else "underclaims -- reframe the headline around abs_delta")
+over = float(np.mean(d > 0))
+print(f"\nmean delta {d.mean():+.3f} | mean |delta| {np.abs(d).mean():.3f} | "
+      f"overclaim {over:.0%} | underclaim {np.mean(d < 0):.0%}   (annotated corpus: 9% overclaim)")
+print("verdict:", f"overclaims in {over:.0%} of drafts -- common enough to measure, proceed" if over >= 0.2
+      else f"overclaims in only {over:.0%} of drafts -- too rare to measure reliably")
 """
 
 # -------------------------------------------------------------- CELL 9 ----
@@ -151,6 +155,10 @@ print("verdict:", "overclaims -- proceed as designed" if d.mean() > 0.1
 # cell after an interruption in the same session resumes rather than restarts.
 # The drafts from the previous cells are cached and reused. For a crash that
 # ends the session, see the restore line in Cell 3.
+#
+# If the verifier or its scorer changed after grounded already ran, call
+# runner.discard("grounded") first. Plain and self-critique never use the
+# verifier, so they and the cached drafts stay, and only grounded is redone.
 """
 from medsumverify.experiment.run import ExperimentRunner, select_reviews
 
