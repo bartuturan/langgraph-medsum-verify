@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from ..config import HOLDOUT_NLI_MODEL
-from .registry import device_of, get_registry, preferred_dtype
+from .registry import device_of, dtype_kwargs, get_registry, preferred_dtype
 
 __all__ = ["Judge", "HoldoutNLI", "entailment_scores"]
 
@@ -43,7 +43,7 @@ class HoldoutNLI:
         def _load():
             tok = AutoTokenizer.from_pretrained(self.model_name)
             model = AutoModelForSequenceClassification.from_pretrained(
-                self.model_name, torch_dtype=preferred_dtype()
+                self.model_name, **dtype_kwargs(preferred_dtype())
             )
             model.to(device_of()).eval()
             return tok, model

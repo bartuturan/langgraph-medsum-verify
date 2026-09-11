@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..config import SEED, WRITER_MODEL
-from .registry import device_of, get_registry, preferred_dtype
+from .registry import device_of, dtype_kwargs, get_registry, preferred_dtype
 
 __all__ = ["Writer", "QwenWriter", "FakeWriter", "load_writer"]
 
@@ -56,7 +56,7 @@ class QwenWriter:
         def _load():
             tok = AutoTokenizer.from_pretrained(self.model_name)
             model = AutoModelForCausalLM.from_pretrained(
-                self.model_name, torch_dtype=preferred_dtype()
+                self.model_name, **dtype_kwargs(preferred_dtype())
             )
             model.to(device_of()).eval()
             return tok, model

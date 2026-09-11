@@ -161,7 +161,7 @@ Local, CPU, no GPU and no model downloads — the whole loop runs against fakes:
 
 ```bash
 pip install -e ".[dev,eval]"
-pytest -q                                            # 132 tests
+pytest -q                                            # 140 tests
 python -m medsumverify.eval.validate_strength        # Result 1a
 python -m medsumverify.eval.validate_verifier --fake # Result 1, CPU lower bound
 ```
@@ -214,6 +214,6 @@ src/medsumverify/
   graph/      state, prompts, nodes, three LangGraph builds
   experiment/ runner with per-document JSONL checkpointing and resume
   eval/       validate_strength, validate_verifier, metrics, compare, holdout, audit_sheet
-tests/        132 tests, all CPU
+tests/        140 tests, all CPU
 notebooks/    kaggle_run.py (diffable) -> kaggle_run.ipynb
 ```

@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["Registry", "get_registry", "device_of", "gpu_report"]
+__all__ = ["Registry", "get_registry", "device_of", "gpu_report", "preferred_dtype", "dtype_kwargs"]
 
 _REGISTRY: "Registry | None" = None
 
@@ -45,6 +45,29 @@ def preferred_dtype():
         return torch.float32
     # T4 (sm75) has no bf16 support; fp16 everywhere keeps Kaggle runs uniform.
     return torch.float16
+
+
+# `from_pretrained` renamed `torch_dtype` to `dtype` in transformers 4.56.0.
+# Measured on a tiny T5: 4.55.0 rejects `dtype` with a TypeError, while 4.56.0
+# and 5.17 accept both but warn that `torch_dtype` is deprecated -- so a later
+# release may drop it, and every model load here would then fail.
+_DTYPE_KWARG_SINCE = "4.56.0"
+
+
+def dtype_kwargs(dtype, version: str | None = None) -> dict:
+    """The keyword argument `from_pretrained` expects for the weight dtype.
+
+    Every model loader goes through this rather than naming the argument
+    itself. `version` overrides the installed transformers version, for tests.
+    """
+    from packaging.version import Version
+
+    if version is None:
+        import transformers
+
+        version = transformers.__version__
+    key = "dtype" if Version(version) >= Version(_DTYPE_KWARG_SINCE) else "torch_dtype"
+    return {key: dtype}
 
 
 def gpu_report(tag: str = "") -> str:
