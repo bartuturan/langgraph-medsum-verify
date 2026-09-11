@@ -161,7 +161,7 @@ Local, CPU, no GPU and no model downloads — the whole loop runs against fakes:
 
 ```bash
 pip install -e ".[dev,eval]"
-pytest -q                                            # 129 tests
+pytest -q                                            # 132 tests
 python -m medsumverify.eval.validate_strength        # Result 1a
 python -m medsumverify.eval.validate_verifier --fake # Result 1, CPU lower bound
 ```
@@ -172,10 +172,13 @@ P100 is 6.0. Regenerate the notebook from its diffable source with
 `python notebooks/build_notebook.py`.
 
 Results are appended to `results/experiment.jsonl` after every single
-(review, condition), and re-running the experiment cell skips what is already
-on disk, so an interruption *within* a session costs minutes. A new Kaggle
-session starts with an empty `/kaggle/working`: attach the previous version's
-output (Add Input → Your Work) and uncomment the restore line in Cell 3 first.
+(review, condition). Re-running the experiment cell skips what already
+finished and retries what failed, so an interruption *within* a session costs
+minutes. Across sessions, switch on **Persistence: Files only** in the Kaggle
+session options before you start: `/kaggle/working` then carries over and the
+next session resumes by itself. Without it, a new session starts empty; attach
+the previous saved version's output (Add Input → Your Work) and uncomment the
+two restore lines in Cell 3.
 
 After the run, fill in `results/audit_sheet.csv` (see
 `results/audit_instructions.txt`) and score it:
@@ -211,6 +214,6 @@ src/medsumverify/
   graph/      state, prompts, nodes, three LangGraph builds
   experiment/ runner with per-document JSONL checkpointing and resume
   eval/       validate_strength, validate_verifier, metrics, compare, holdout, audit_sheet
-tests/        129 tests, all CPU
+tests/        132 tests, all CPU
 notebooks/    kaggle_run.py (diffable) -> kaggle_run.ipynb
 ```

@@ -9,10 +9,10 @@ run reuses the identical draft rather than regenerating a slightly different
 one.
 
 *Crash safety.* Results are appended to JSONL after every single
-(review, condition), and a restart skips whatever is already on disk, so an
-interruption within a session costs minutes, not the day. A new Kaggle session
-starts empty; restore results/*.jsonl first (the commented line in notebook
-Cell 3) and the run carries on from where it stopped.
+(review, condition). A restart skips whatever finished successfully and
+retries whatever failed, so an interruption within a session costs minutes,
+not the day. A new Kaggle session starts empty unless Persistence is switched
+on; see the restore lines in notebook Cell 3.
 """
 
 from __future__ import annotations
@@ -120,10 +120,37 @@ class ExperimentRunner:
         _append_jsonl(self.drafts_path, {"review_id": review.review_id, "draft": draft})
         return draft
 
-    # -- main loop ---------------------------------------------------------
+    # -- bookkeeping -------------------------------------------------------
+
+    def _outcomes(self) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+        """(succeeded, failed-and-never-succeeded) keys across all attempts on disk.
+
+        A key that failed once and later succeeded counts as succeeded. Draft
+        failures are recorded under the pseudo-condition "draft".
+        """
+        ok: set[tuple[str, str]] = set()
+        bad: set[tuple[str, str]] = set()
+        for r in load_results(self.results_dir):
+            key = (r.get("review_id"), r.get("condition"))
+            (bad if r.get("error") else ok).add(key)
+        return ok, bad - ok
 
     def completed(self) -> set[tuple[str, str]]:
-        return {(r["review_id"], r["condition"]) for r in load_results(self.results_dir)}
+        """(review, condition) pairs that finished *successfully*.
+
+        Failed attempts are deliberately excluded so that a resume retries
+        them. They used to count as finished: one transient failure -- a CUDA
+        out-of-memory, a download hiccup -- then skipped that step for good, and
+        the review silently fell out of the paired analysis, which needs all
+        three conditions.
+        """
+        return self._outcomes()[0]
+
+    def failed(self) -> set[tuple[str, str]]:
+        """Conditions whose attempts so far have all failed; the next run retries them."""
+        return {k for k in self._outcomes()[1] if k[1] in CONDITIONS}
+
+    # -- main loop ---------------------------------------------------------
 
     def run(
         self,
@@ -132,9 +159,21 @@ class ExperimentRunner:
         verbose: bool = True,
     ) -> list[dict]:
         conditions = list(conditions)
-        done = self.completed()
+        done, failed_before = self._outcomes()
         cache = self._draft_cache()
         written: list[dict] = []
+        n_failed_drafts = 0
+
+        if verbose:
+            wanted = {r.review_id for r in reviews}
+            retrying = sorted(
+                (rid, c) for rid, c in failed_before
+                if rid in wanted and (c in conditions or (c == "draft" and rid not in cache))
+            )
+            if retrying:
+                shown = ", ".join(f"{rid}/{c}" for rid, c in retrying[:8])
+                more = f" and {len(retrying) - 8} more" if len(retrying) > 8 else ""
+                print(f"[resume] retrying {len(retrying)} step(s) that failed before: {shown}{more}")
 
         for n, review in enumerate(reviews, 1):
             pending = [c for c in conditions if (review.review_id, c) not in done]
@@ -150,6 +189,7 @@ class ExperimentRunner:
                     {"review_id": review.review_id, "condition": "draft",
                      "error": traceback.format_exc()[-1500:]},
                 )
+                n_failed_drafts += 1
                 if verbose:
                     print(f"[{n}/{len(reviews)}] {review.review_id} DRAFT FAILED")
                 continue
@@ -191,4 +231,11 @@ class ExperimentRunner:
                         f"[{n}/{len(reviews)}] {review.review_id} {condition:13s} "
                         f"{flag} {record['seconds']:6.1f}s"
                     )
+
+        if verbose:
+            n_err = sum(1 for r in written if "error" in r) + n_failed_drafts
+            msg = f"[done] {len(written) - (n_err - n_failed_drafts)} step(s) finished"
+            if n_err:
+                msg += f", {n_err} failed -- re-run to retry them"
+            print(msg)
         return written

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import pytest
 
 from medsumverify.experiment.run import ExperimentRunner, load_results, select_reviews
+from medsumverify.graph.state import CONDITIONS
 from medsumverify.models.factcheck import FakeFactChecker
 from medsumverify.models.retriever import FakeRetriever
 from medsumverify.models.writer import FakeWriter
@@ -97,3 +99,80 @@ def test_draft_cache_survives_a_new_runner(tmp_path, reviews):
     b = ExperimentRunner(FakeWriter(), Verifier(FakeFactChecker(), FakeRetriever()), results_dir=tmp_path)
     b.run(reviews[:1], conditions=["grounded"], verbose=False)
     assert load_results(tmp_path)[-1]["draft"] == drafted, "restart produced a different draft"
+
+
+# --------------------------------------------------------------------------
+# Failures must be retried on resume, not treated as finished
+# --------------------------------------------------------------------------
+
+
+class FlakyVerifier:
+    """Raises on its first `fails` calls -- a stand-in for a transient CUDA OOM."""
+
+    def __init__(self, inner, fails: int = 1):
+        self.inner, self.fails = inner, fails
+
+    def verify(self, summary, documents):
+        if self.fails > 0:
+            self.fails -= 1
+            raise RuntimeError("simulated CUDA out of memory")
+        return self.inner.verify(summary, documents)
+
+
+@dataclass
+class FlakyDraftWriter(FakeWriter):
+    """Fails its first draft request, then behaves."""
+
+    fail_drafts: int = 1
+
+    def chat(self, system, user, max_new_tokens=320, role="draft"):
+        if role == "draft" and self.fail_drafts > 0:
+            self.fail_drafts -= 1
+            raise RuntimeError("simulated download hiccup")
+        return super().chat(system, user, max_new_tokens, role)
+
+
+def test_failed_condition_is_retried_on_resume(tmp_path, reviews):
+    """A transient failure must not permanently drop a review from the comparison.
+
+    Failed records used to count as finished, so the step was never retried
+    and the review silently fell out of the paired analysis, which needs all
+    three conditions.
+    """
+    flaky = FlakyVerifier(Verifier(FakeFactChecker(), FakeRetriever()), fails=1)
+    runner = ExperimentRunner(FakeWriter(), flaky, results_dir=tmp_path)
+    rid = reviews[0].review_id
+
+    runner.run(reviews[:1], verbose=False)
+    assert (rid, "grounded") in runner.failed()
+    assert (rid, "grounded") not in runner.completed()
+
+    retried = runner.run(reviews[:1], verbose=False)
+    assert [(r["condition"], "error" in r) for r in retried] == [("grounded", False)]
+    assert not runner.failed()
+
+    from medsumverify.eval.compare import build_metric_table
+
+    assert rid in build_metric_table(load_results(tmp_path)), \
+        "the successful retry must complete the review for the paired analysis"
+
+
+def test_failed_draft_is_retried_on_resume(tmp_path, reviews):
+    runner = ExperimentRunner(
+        FlakyDraftWriter(), Verifier(FakeFactChecker(), FakeRetriever()), results_dir=tmp_path
+    )
+    assert runner.run(reviews[:1], verbose=False) == [], "nothing can run without a draft"
+    [rec] = load_results(tmp_path)
+    assert rec["condition"] == "draft" and "error" in rec
+
+    written = runner.run(reviews[:1], verbose=False)
+    assert sorted(r["condition"] for r in written) == sorted(CONDITIONS)
+
+
+def test_success_is_never_rerun_even_after_an_earlier_failure(tmp_path, reviews):
+    """An error record followed by a success means done -- don't redo the success."""
+    flaky = FlakyVerifier(Verifier(FakeFactChecker(), FakeRetriever()), fails=1)
+    runner = ExperimentRunner(FakeWriter(), flaky, results_dir=tmp_path)
+    runner.run(reviews[:1], verbose=False)   # grounded fails
+    runner.run(reviews[:1], verbose=False)   # grounded retried, succeeds
+    assert runner.run(reviews[:1], verbose=False) == []

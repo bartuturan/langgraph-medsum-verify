@@ -40,17 +40,22 @@ print("torch", torch.__version__)
 # Data. Downloads the 264 MB MSLR tarball once and converts to parquet, then
 # the human annotation file. Both are cached under /kaggle/working.
 #
-# Resuming in a NEW session after a crash? A new session starts with an empty
-# /kaggle/working. Attach the previous version's output (Add Input -> Your
-# Work -> this notebook) and uncomment the cp line. It restores the results
-# and the cached drafts, so every condition still starts from the same draft.
-# On a resume you can skip Cell 6; its result is already in the restored files.
+# Resuming in a NEW session after a crash? Easiest: have "Persistence: Files
+# only" switched on in the session options -- it has to be on *before* the
+# session that dies. /kaggle/working then carries over and nothing needs
+# restoring. Otherwise a new session starts empty: attach the previous saved
+# version's output (Add Input -> Your Work -> this notebook) and uncomment the
+# two lines below. The cp restores the results, the cached drafts (so every
+# condition still starts from the same draft) and the gate result,
+# validation_verifier.json. The grep must print "gate_passed": true before you
+# skip Cell 6 on a resume. Steps that failed last time are retried, not skipped.
 """
 from medsumverify.data.download import ensure_all
 from medsumverify.data.cochrane import load_reviews
 from medsumverify.data.annotations import load_annotated
 
-# !mkdir -p /kaggle/working/results && cp /kaggle/input/*/results/*.jsonl /kaggle/working/results/
+# !mkdir -p /kaggle/working/results && cp /kaggle/input/*/results/*.jsonl /kaggle/input/*/results/*.json /kaggle/working/results/
+# !grep gate_passed /kaggle/working/results/validation_verifier.json
 
 ensure_all()
 dev = load_reviews("dev")
