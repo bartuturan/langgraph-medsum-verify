@@ -9,8 +9,10 @@ run reuses the identical draft rather than regenerating a slightly different
 one.
 
 *Crash safety.* Results are appended to JSONL after every single
-(review, condition), and a restart skips whatever is already on disk. A dropped
-Kaggle session costs minutes, not the day.
+(review, condition), and a restart skips whatever is already on disk, so an
+interruption within a session costs minutes, not the day. A new Kaggle session
+starts empty; restore results/*.jsonl first (the commented line in notebook
+Cell 3) and the run carries on from where it stopped.
 """
 
 from __future__ import annotations

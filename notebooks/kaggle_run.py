@@ -4,8 +4,10 @@ Kept as a .py file so it is diffable in git; notebooks/build_notebook.py turns
 it into kaggle_run.ipynb. Order matters -- the held-out judge is loaded only
 after the loop's models are freed, so the two never share the GPU.
 
-Accelerator: GPU T4 x2 or P100. Internet: ON (models + data are downloaded).
-Expect roughly 2 hours end to end for 50 reviews.
+Accelerator: GPU T4 x2. Not P100: Kaggle's current PyTorch build needs CUDA
+compute capability 7.0+, the P100 is 6.0, and it fails with "no kernel image
+is available". Internet: ON (models + data are downloaded).
+Expect roughly 3 hours end to end for 50 reviews.
 """
 
 # -------------------------------------------------------------- CELL 1 ----
@@ -30,10 +32,18 @@ print("torch", torch.__version__)
 # -------------------------------------------------------------- CELL 3 ----
 # Data. Downloads the 264 MB MSLR tarball once and converts to parquet, then
 # the human annotation file. Both are cached under /kaggle/working.
+#
+# Resuming in a NEW session after a crash? A new session starts with an empty
+# /kaggle/working. Attach the previous version's output (Add Input -> Your
+# Work -> this notebook) and uncomment the cp line. It restores the results
+# and the cached drafts, so every condition still starts from the same draft.
+# On a resume you can skip Cell 6; its result is already in the restored files.
 """
 from medsumverify.data.download import ensure_all
 from medsumverify.data.cochrane import load_reviews
 from medsumverify.data.annotations import load_annotated
+
+# !mkdir -p /kaggle/working/results && cp /kaggle/input/*/results/*.jsonl /kaggle/working/results/
 
 ensure_all()
 dev = load_reviews("dev")
@@ -126,8 +136,9 @@ print("verdict:", "overclaims -- proceed as designed" if d.mean() > 0.1
 # -------------------------------------------------------------- CELL 9 ----
 # Full run. Appends to results/experiment.jsonl after every single
 # (review, condition), and skips anything already on disk, so re-running this
-# cell after a dropped session resumes rather than restarts. The 12 drafts from
-# the previous cell are cached and reused.
+# cell after an interruption in the same session resumes rather than restarts.
+# The drafts from the previous cells are cached and reused. For a crash that
+# ends the session, see the restore line in Cell 3.
 """
 from medsumverify.experiment.run import ExperimentRunner, select_reviews
 
@@ -138,15 +149,36 @@ runner.run(reviews)
 # ------------------------------------------------------------- CELL 10 ----
 # Free the loop's models before loading the held-out judge, so the two never
 # coexist and the independence of the final score is structural, not just
-# claimed.
+# claimed. The notebook's own variables have to go first: the registry drops
+# its handles, but `writer`, `factchecker`, `retriever`, `verifier` and
+# `runner` still point at the models, and nothing is released while they do.
 """
+import gc
+for name in ("runner", "verifier", "writer", "factchecker", "retriever"):
+    globals().pop(name, None)
 from medsumverify.models.registry import get_registry, gpu_report
 get_registry().free()
+gc.collect()
 print(gpu_report("freed"))
 """
 
 # ------------------------------------------------------------- CELL 11 ----
-# The comparison, plus the blinded audit sheet to fill in by hand.
+# Secondary metric: a MedNLI-trained judge from a different model family that
+# the loop can never reach (a test enforces that). Each claim is scored against
+# every included study separately and the best one counts, so no abstract is
+# cut off by BERT's 512-token window. Writes results/holdout_nli.json, which
+# the comparison below picks up on its own. A minute or two.
+"""
+from medsumverify.eval.holdout import score_holdout
+from medsumverify.models.registry import gpu_report
+score_holdout()
+print(gpu_report("held-out judge"))
+"""
+
+# ------------------------------------------------------------- CELL 12 ----
+# The comparison, plus the blinded audit sheet to fill in by hand. Scoring the
+# filled-in sheet happens afterwards, on your own machine:
+#     python -m medsumverify.eval.audit_sheet score
 """
 from medsumverify.eval.compare import compare
 from medsumverify.eval.audit_sheet import build_audit_sheet
@@ -155,9 +187,10 @@ compare()
 build_audit_sheet(n_claims=60)
 """
 
-# ------------------------------------------------------------- CELL 12 ----
-# Persist. Kaggle keeps /kaggle/working across a "Save Version", but mirroring
-# to a dataset is what survives a session that dies mid-run.
+# ------------------------------------------------------------- CELL 13 ----
+# Persist. Download results.tar.gz from the output pane; "Save Version" also
+# keeps /kaggle/working as this version's output, which is what Cell 3's
+# restore line reads from.
 """
 !ls -la /kaggle/working/results/
 !tar czf /kaggle/working/results.tar.gz -C /kaggle/working results

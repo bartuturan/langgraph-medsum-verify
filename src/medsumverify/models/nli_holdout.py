@@ -9,13 +9,19 @@ verify/ -- a test enforces that.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Protocol, Sequence
 
 from ..config import HOLDOUT_NLI_MODEL
 from .registry import device_of, get_registry, preferred_dtype
 
-__all__ = ["HoldoutNLI", "entailment_scores"]
+__all__ = ["Judge", "HoldoutNLI", "entailment_scores"]
+
+
+class Judge(Protocol):
+    def score(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]:
+        """P(premise entails hypothesis) per pair."""
 
 
 @dataclass
@@ -45,7 +51,8 @@ class HoldoutNLI:
         self._tok, self._model = get_registry().get(f"nli:{self.model_name}", _load)
 
         # Label order varies between NLI checkpoints; read it off the config
-        # rather than assuming index 0 or 2 means entailment.
+        # rather than assuming index 0 or 2 means entailment. (For the default
+        # checkpoint it is {0: contradiction, 1: entailment, 2: neutral}.)
         labels = {
             i: str(v).lower() for i, v in (self._model.config.id2label or {}).items()
         }
@@ -82,17 +89,41 @@ class HoldoutNLI:
         return out
 
 
-def entailment_scores(summaries: Sequence[str], sources: Sequence[str]) -> list[float]:
-    """Mean per-claim entailment of each summary against its source."""
+def entailment_scores(
+    summaries: Sequence[str],
+    source_documents: Sequence[Sequence[str]],
+    judge: Judge | None = None,
+) -> list[float]:
+    """Per summary: mean over claims of the best entailment across its studies.
+
+    Each claim is scored against every included study *separately* and the
+    best-supporting study counts. Feeding the concatenated source instead would
+    be truncated to BERT's 512 tokens -- roughly the first abstract -- so any
+    claim about a later study would look unsupported.
+
+    Deliberately no retrieval step: the loop's retriever would then be a shared
+    component between the thing being measured and the measurement, and scoring
+    every study makes selection unnecessary. Summaries with no claims, or
+    reviews with no usable source, score NaN rather than 0.
+    """
     from ..verify.segment import segment
 
-    judge = HoldoutNLI()
-    out = []
-    for summary, source in zip(summaries, sources):
+    judge = judge or HoldoutNLI()
+    out: list[float] = []
+    for summary, docs in zip(summaries, source_documents):
         claims = segment(summary)
-        if not claims:
+        docs = [d for d in docs if d and d.strip()]
+        if not claims or not docs:
             out.append(float("nan"))
             continue
-        scores = judge.score([source[:4000]] * len(claims), claims)
-        out.append(sum(scores) / len(scores))
+        premises = [d for _ in claims for d in docs]
+        hypotheses = [c for c in claims for _ in docs]
+        scores = judge.score(premises, hypotheses)
+        n = len(docs)
+        per_claim = [max(scores[i * n: (i + 1) * n]) for i in range(len(claims))]
+        out.append(sum(per_claim) / len(per_claim))
     return out
+
+
+def _is_nan(x: float) -> bool:
+    return isinstance(x, float) and math.isnan(x)

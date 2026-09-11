@@ -15,12 +15,19 @@ The reading of the result is fixed in advance:
                                        earning their keep
 
 and any strength win is discounted if the guardrails move the wrong way.
+
+The held-out NLI judge is a secondary check from a different model family. It
+is scored separately (eval/holdout.py, after the loop's models are freed) and
+picked up here from results/holdout_nli.json when present. Higher is better
+for it, unlike delta_strength.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from scipy import stats
@@ -28,13 +35,16 @@ from scipy import stats
 from ..config import paths
 from ..experiment.run import load_results
 from ..graph.state import CONDITIONS
+from .holdout import load_holdout
 from .metrics import SummaryMetrics, score_summary
 
 __all__ = ["compare", "build_metric_table"]
 
 PRIMARY = "delta_strength"
+HOLDOUT = "holdout_entailment"
 GUARDRAILS = ("direction_match", "content_f1", "n_words", "hedge_density", "abs_delta")
 CONTRASTS = (("grounded", "plain"), ("grounded", "selfcritique"), ("selfcritique", "plain"))
+TESTED = (PRIMARY, "abs_delta", "overclaims", "direction_match", "content_f1")
 
 
 def build_metric_table(records: list[dict] | None = None) -> dict[str, dict[str, SummaryMetrics]]:
@@ -104,7 +114,35 @@ def _wilcoxon(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
     return float(stat), float(p), float(rbc)
 
 
-def compare(records: list[dict] | None = None, verbose: bool = True) -> dict:
+def _contrasts_for(metric: str, n: int, column: Callable[[str], np.ndarray]) -> list[Contrast]:
+    """The three paired contrasts for one metric, Holm-corrected together."""
+    raw = []
+    for a, b in CONTRASTS:
+        xa, xb = column(a), column(b)
+        stat, p, rbc = _wilcoxon(xa, xb)
+        lo, hi = _bootstrap_ci(xa - xb)
+        raw.append((a, b, float(xa.mean()), float(xb.mean()),
+                    float((xa - xb).mean()), lo, hi, stat, p, rbc))
+    adj = _holm([r[8] for r in raw])
+    return [
+        Contrast(
+            a=r[0], b=r[1], metric=metric, n=n,
+            mean_a=r[2], mean_b=r[3], mean_diff=r[4],
+            ci_low=r[5], ci_high=r[6], statistic=r[7],
+            p_raw=r[8], p_holm=p_adj, effect_size=r[9],
+        )
+        for r, p_adj in zip(raw, adj)
+    ]
+
+
+def compare(
+    records: list[dict] | None = None,
+    verbose: bool = True,
+    results_dir: Path | None = None,
+) -> dict:
+    out_dir = Path(results_dir or paths().results)
+    if records is None:
+        records = load_results(out_dir)
     table = build_metric_table(records)
     reviews = sorted(table)
     if len(reviews) < 5:
@@ -122,33 +160,36 @@ def compare(records: list[dict] | None = None, verbose: bool = True) -> dict:
     }
 
     contrasts: list[Contrast] = []
-    for metric in (PRIMARY, "abs_delta", "overclaims", "direction_match", "content_f1"):
-        raw: list[tuple[str, str, float, float, float, float, float, float, float]] = []
-        for a, b in CONTRASTS:
-            xa, xb = col(a, metric), col(b, metric)
-            stat, p, rbc = _wilcoxon(xa, xb)
-            lo, hi = _bootstrap_ci(xa - xb)
-            raw.append((a, b, float(xa.mean()), float(xb.mean()),
-                        float((xa - xb).mean()), lo, hi, stat, p, rbc))
-        adj = _holm([r[8] for r in raw])
-        for r, p_adj in zip(raw, adj):
-            contrasts.append(Contrast(
-                a=r[0], b=r[1], metric=metric, n=len(reviews),
-                mean_a=r[2], mean_b=r[3], mean_diff=r[4],
-                ci_low=r[5], ci_high=r[6], statistic=r[7],
-                p_raw=r[8], p_holm=p_adj, effect_size=r[9],
-            ))
+    for metric in TESTED:
+        contrasts += _contrasts_for(metric, len(reviews), lambda c, m=metric: col(c, m))
+
+    # Secondary: the held-out judge, if it has been run. Only reviews scored in
+    # all three conditions enter, so the test stays paired.
+    holdout = load_holdout(out_dir)
+    h_reviews = [r for r in reviews if all((r, c) in holdout for c in CONDITIONS)]
+    holdout_info = {"available": False, "n_reviews": len(h_reviews)}
+    if len(h_reviews) >= 5:
+        def hcol(condition: str) -> np.ndarray:
+            return np.array([holdout[(r, condition)] for r in h_reviews])
+
+        for c in CONDITIONS:
+            descriptives[c][HOLDOUT] = float(hcol(c).mean())
+        contrasts += _contrasts_for(HOLDOUT, len(h_reviews), hcol)
+        holdout_info["available"] = True
+    elif holdout:
+        print(f"[warn] held-out scores cover only {len(h_reviews)} complete reviews; skipped")
 
     out = {
         "n_reviews": len(reviews),
         "aggregation": "mean",
         "descriptives": descriptives,
         "contrasts": [c.__dict__ for c in contrasts],
+        "holdout": holdout_info,
         "verdict": _verdict(descriptives, contrasts),
     }
     if verbose:
         print(_report(out))
-    dest = paths().results / "comparison.json"
+    dest = out_dir / "comparison.json"
     dest.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"[write] {dest}")
     return out
@@ -163,6 +204,7 @@ def _verdict(descriptives: dict, contrasts: list[Contrast]) -> dict:
 
     gp = get(PRIMARY, "grounded", "plain")
     gs = get(PRIMARY, "grounded", "selfcritique")
+    gh = get(HOLDOUT, "grounded", "plain")
     guard_ok = (
         descriptives["grounded"]["direction_match"] >= descriptives["plain"]["direction_match"] - 0.05
         and descriptives["grounded"]["content_f1"] >= descriptives["plain"]["content_f1"] - 0.05
@@ -171,6 +213,10 @@ def _verdict(descriptives: dict, contrasts: list[Contrast]) -> dict:
         "grounded_beats_plain": bool(gp and gp.p_holm < 0.05 and gp.mean_diff < 0),
         "grounded_beats_selfcritique": bool(gs and gs.p_holm < 0.05 and gs.mean_diff < 0),
         "guardrails_hold": bool(guard_ok),
+        # Higher entailment is better, so a grounded win is a positive diff.
+        "holdout_grounded_vs_plain": (
+            None if gh is None else {"mean_diff": gh.mean_diff, "p_holm": gh.p_holm}
+        ),
         "note": (
             "A reduction in delta_strength counts only if guardrails_hold; "
             "otherwise the reviser bought calibration with content."
@@ -182,23 +228,32 @@ def _report(out: dict) -> str:
     L = ["=" * 78,
          f"THREE-CONDITION COMPARISON   n={out['n_reviews']} reviews, paired",
          "=" * 78, "",
-         f"  {'metric':<18}" + "".join(f"{c:>16}" for c in CONDITIONS)]
+         f"  {'metric':<20}" + "".join(f"{c:>16}" for c in CONDITIONS)]
     for m in (PRIMARY, "abs_delta", "overclaims", "direction_match", "content_f1",
-              "hedge_density", "n_words"):
-        L.append(f"  {m:<18}" + "".join(f"{out['descriptives'][c][m]:>16.3f}" for c in CONDITIONS))
+              "hedge_density", "n_words", HOLDOUT):
+        if m not in out["descriptives"][CONDITIONS[0]]:
+            continue
+        L.append(f"  {m:<20}" + "".join(f"{out['descriptives'][c][m]:>16.3f}" for c in CONDITIONS))
     L += ["", "  paired contrasts (Wilcoxon signed-rank, Holm-corrected)", ""]
     for c in out["contrasts"]:
         star = "*" if c["p_holm"] < 0.05 else " "
+        n_note = f" (n={c['n']})" if c["n"] != out["n_reviews"] else ""
         L.append(
-            f"  {star} {c['metric']:<16} {c['a']:>13} vs {c['b']:<13} "
+            f"  {star} {c['metric']:<18} {c['a']:>13} vs {c['b']:<13} "
             f"diff={c['mean_diff']:+.3f} [{c['ci_low']:+.3f},{c['ci_high']:+.3f}] "
-            f"p={c['p_holm']:.4f} rbc={c['effect_size']:+.2f}"
+            f"p={c['p_holm']:.4f} rbc={c['effect_size']:+.2f}{n_note}"
         )
     v = out["verdict"]
+    h = v["holdout_grounded_vs_plain"]
+    holdout_line = (
+        "not run (notebook Cell 11)" if h is None
+        else f"diff={h['mean_diff']:+.3f}  p={h['p_holm']:.4f}  (higher = better)"
+    )
     L += ["", "  verdict:",
           f"    grounded beats plain ......... {v['grounded_beats_plain']}",
           f"    grounded beats self-critique . {v['grounded_beats_selfcritique']}",
           f"    guardrails hold .............. {v['guardrails_hold']}",
+          f"    held-out judge, grounded-plain {holdout_line}",
           f"    {v['note']}", "=" * 78]
     return "\n".join(L)
 
