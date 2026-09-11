@@ -10,9 +10,11 @@ the Cochrane reviewer's own conclusion, in *either* direction. The first plan
 used the signed delta, which counts any drop in strength as a win. The
 go/no-go probe then showed Qwen both over- and underclaims (42% / 58% of
 drafts), and under a signed metric pushing an already-weak claim weaker would
-score as success. abs_delta was chosen at that point, before any comparison
-between conditions had been run. The signed delta and the overclaim rate are
-still reported, as the direction of the shift and the specific distortion.
+score as success. abs_delta was chosen on the evidence of that probe alone: a
+first comparison under the old scorer and old metric had already been
+generated, but no one had read its numbers when the choice was made. The
+signed delta and the overclaim rate are still reported, as the direction of
+the shift and the specific distortion.
 
 The reading of the result is fixed in advance:
 
@@ -233,9 +235,10 @@ def _verdict(descriptives: dict, contrasts: list[Contrast]) -> dict:
         # Higher entailment is better, so a grounded win is a positive diff.
         "holdout_grounded_vs_plain": brief(get(HOLDOUT, "grounded", "plain")),
         "note": (
-            "Primary is abs_delta, miscalibration in either direction, chosen after "
-            "the go/no-go probe showed Qwen both over- and underclaims and before any "
-            "comparison was run. A win counts only if guardrails_hold."
+            "Primary is abs_delta, miscalibration in either direction, chosen because "
+            "the go/no-go probe showed Qwen both over- and underclaims; an earlier "
+            "old-metric comparison existed but was unread at the time. A win counts "
+            "only if guardrails_hold."
         ),
     }
 

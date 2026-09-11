@@ -142,8 +142,11 @@ On a 12-review probe Qwen overclaims in **5 of 12 drafts (42%, Wilson 95% CI
 underclaims in the other 7, for a mean shift of −0.29. It misjudges strength in
 both directions. That is why the primary comparison metric is `abs_delta`,
 miscalibration either way: under the signed delta, a reviser that pushed an
-already-weak claim weaker would score as a win. The switch was made after this
-probe and **before any comparison between conditions was run**.
+already-weak claim weaker would score as a win. The switch was made on the
+evidence of this probe alone. A first 50-review comparison, under the old scorer
+and the old metric, had already been generated on Kaggle, but **no one had read
+its numbers when the choice was made**. The comparison will be reported from a
+clean rerun with the new scorer and this metric fixed in advance.
 
 On all 50 experiment drafts, the first scorer's verifier raised 78 flags across
 94 claims: 57 unsupported, 14 direction, 7 overclaim. Most drafts open with "The

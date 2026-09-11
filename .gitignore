@@ -15,3 +15,7 @@ data_cache/
 results/*.jsonl
 results/audit_key.json
 .ipynb_checkpoints/
+
+# Downloaded Kaggle output. It bundles the audit key, so committing it would
+# unblind the audit for anyone reading the repo.
+*.tar.gz
