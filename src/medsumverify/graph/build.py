@@ -27,7 +27,15 @@ from .state import CONDITIONS, LoopState, initial_state
 __all__ = ["build_graph", "run_condition", "CONDITIONS"]
 
 
-def build_graph(condition: str, writer: Writer, verifier: Verifier | None = None):
+def build_graph(
+    condition: str,
+    writer: Writer,
+    verifier: Verifier | None = None,
+    gate: bool = True,
+):
+    """`gate` is passed straight to the reviser and so applies to both revising
+    conditions; gating only the grounded one would confound the gate with the
+    grounding it is supposed to be helping."""
     from langgraph.graph import END, START, StateGraph
 
     if condition not in CONDITIONS:
@@ -47,7 +55,7 @@ def build_graph(condition: str, writer: Writer, verifier: Verifier | None = None
         make_verifier_node(verifier) if condition == "grounded" else make_self_critic(writer)
     )
     g.add_node("critique", critique_node)
-    g.add_node("revise", make_reviser(writer))
+    g.add_node("revise", make_reviser(writer, gate=gate))
 
     g.add_edge(START, "draft")
     g.add_edge("draft", "critique")
@@ -66,9 +74,10 @@ def run_condition(
     verifier: Verifier | None = None,
     draft: str = "",
     max_rounds: int = 2,
+    gate: bool = True,
 ) -> LoopState:
     """Run one condition on one review. `draft` pins the shared Round-0 text."""
-    graph = build_graph(condition, writer, verifier)
+    graph = build_graph(condition, writer, verifier, gate=gate)
     state = initial_state(review_id, source_documents, condition, draft, max_rounds)
     # recursion_limit guards against a routing bug looping forever; the real
     # stopping rule is should_continue.

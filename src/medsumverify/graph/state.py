@@ -39,6 +39,11 @@ class LoopState(TypedDict, total=False):
     reports: list[dict[str, Any]]   # verifier output, one per round
     critiques: list[str]            # raw self-critique text, one per round
     history: list[dict[str, Any]]   # {round, summary, n_flagged, n_claims}
+    # One entry per flag the Reviser acted on: what it proposed, what the gate
+    # did about it, and the strength either side. `outcome` is accepted,
+    # retried or rejected -- so "how often did the gate save us" is a number
+    # that can be read straight off the results.
+    repairs: list[dict[str, Any]]
 
     n_llm_calls: int
     error: str
@@ -64,5 +69,6 @@ def initial_state(
         reports=[],
         critiques=[],
         history=[],
+        repairs=[],
         n_llm_calls=0,
     )

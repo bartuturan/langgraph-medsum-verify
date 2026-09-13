@@ -12,6 +12,7 @@ from typing import Callable
 
 from ..models.writer import Writer
 from ..verify.segment import clean_summary, segment
+from ..verify.strength import score_strength
 from ..verify.verifier import Verifier
 from . import prompts
 from .state import Flag, LoopState
@@ -137,44 +138,94 @@ def make_self_critic(writer: Writer) -> Callable[[LoopState], dict]:
 # --------------------------------------------------------------------------
 
 
-def make_reviser(writer: Writer) -> Callable[[LoopState], dict]:
+def make_reviser(writer: Writer, gate: bool = True) -> Callable[[LoopState], dict]:
+    """The revising node. `gate` refuses a rewrite that strengthens its claim.
+
+    The Reviser's instructions push one way only -- "do not hedge further than
+    the evidence requires", with nothing forbidding the opposite -- and on the
+    50-review run the measured consequence was 42 rewrites that came out
+    stronger against 27 weaker, and 14 of the 18 reviews the loop damaged were
+    damaged by strengthening. A flag on a correct claim is only cheap if the
+    repair is constrained, so the model's output is treated as a *proposal*:
+    scored, retried once if it strengthened, and dropped for the original if
+    the retry strengthens too.
+
+    Set `gate=False` to reproduce the ungated behaviour exactly.
+    """
+
     def reviser(state: LoopState) -> dict:
         claims = list(state.get("claims") or segment(state["summary"]))
         flags = state.get("flags", [])
         if not claims or not flags:
             return {"round": state.get("round", 0) + 1}
 
+        rnd = state.get("round", 0) + 1
         calls = 0
+        repairs: list[dict] = []
         for flag in flags:
             i = flag["index"]
             if not (0 <= i < len(claims)):
                 continue
+            original = flag["claim"]
             block = (
                 prompts.EVIDENCE_BLOCK.format(evidence=flag["evidence"])
                 if flag.get("evidence") else ""
             )
-            rewritten = writer.chat(
-                prompts.REVISER_SYSTEM,
-                prompts.REVISER_USER.format(
-                    claim=flag["claim"], reason=flag["reason"] or "stated too strongly",
-                    evidence_block=block,
-                ),
-                max_new_tokens=120,
-                role="revise",
+            user = prompts.REVISER_USER.format(
+                claim=original, reason=flag["reason"] or "stated too strongly",
+                evidence_block=block,
             )
+            first = _first_sentence(clean_summary(
+                writer.chat(prompts.REVISER_SYSTEM, user, max_new_tokens=120, role="revise")
+            ))
             calls += 1
-            rewritten = _first_sentence(clean_summary(rewritten))
-            if rewritten:
-                claims[i] = rewritten
+
+            before = score_strength(original).score
+            final, outcome = first, "accepted"
+            if gate and first and score_strength(first).score > before:
+                retry = _first_sentence(clean_summary(
+                    writer.chat(
+                        prompts.REVISER_SYSTEM,
+                        user + prompts.REVISER_RETRY_NOTE.format(previous=first),
+                        max_new_tokens=120,
+                        role="revise",
+                    )
+                ))
+                calls += 1
+                if retry and score_strength(retry).score <= before:
+                    final, outcome = retry, "retried"
+                else:
+                    final, outcome = original, "rejected"
+
+            if final:
+                claims[i] = final
+            repairs.append({
+                "round": rnd,
+                "index": i,
+                "outcome": outcome,
+                # The flag's reason carries its kind for the grounded condition
+                # and the model's own words for self-critique, so the counts can
+                # be split by flag type without adding a field to Flag -- which
+                # would give the Reviser a second way to tell the two revising
+                # conditions apart.
+                "reason": flag.get("reason", ""),
+                "had_evidence": bool(flag.get("evidence")),
+                "score_before": round(before, 3),
+                "score_first": round(score_strength(first).score, 3) if first else None,
+                "score_final": round(score_strength(final).score, 3) if final else None,
+                "original": original,
+                "first": first,
+                "final": final,
+            })
 
         summary = " ".join(claims).strip()
-        rnd = state.get("round", 0) + 1
         return {
             "summary": summary,
             "claims": claims,
             "round": rnd,
             "flags": [],
             "n_llm_calls": state.get("n_llm_calls", 0) + calls,
+            "repairs": [*state.get("repairs", []), *repairs],
             "history": [*state.get("history", []),
                         {"round": rnd, "summary": summary,
                          "n_claims": len(claims), "n_flagged": len(flags)}],

@@ -1,6 +1,6 @@
 """Secondary metric: the held-out NLI judge over every experiment summary.
 
-Run on the GPU after the loop's models are freed (notebook Cell 11). The
+Run on the GPU after the loop's models are freed (notebook Cell 12). The
 scores are cached to results/holdout_nli.json, so the comparison can be re-run
 anywhere -- including on a laptop with no GPU -- and picks them up on its own.
 """

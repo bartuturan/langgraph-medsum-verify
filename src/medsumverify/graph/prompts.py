@@ -76,6 +76,22 @@ WHAT THE SOURCE TRIALS ACTUALLY SAY:
 {evidence}
 """
 
+# Appended to the *same* reviser prompt on a second attempt, after the gate in
+# nodes.make_reviser rejected the first one for coming back stronger than the
+# claim it was meant to fix. The first attempt is left byte-identical so that
+# any change against the ungated run is attributable to the gate alone.
+#
+# Deliberately says nothing about the flag type: the reviser must not be able
+# to tell the grounded condition from self-critique except by whether
+# EVIDENCE_BLOCK is present, which is the experimental manipulation.
+REVISER_RETRY_NOTE = """
+YOUR PREVIOUS ATTEMPT:
+{previous}
+
+That states the claim MORE strongly than the original, which is the opposite of what is \
+needed. Rewrite it again, fixing the problem without making the claim any stronger than \
+it already was."""
+
 
 def numbered(claims: list[str]) -> str:
     return "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))

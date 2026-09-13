@@ -108,7 +108,9 @@ from medsumverify.experiment.run import ExperimentRunner, select_reviews
 from medsumverify.verify.verifier import Verifier
 
 verifier = Verifier(factchecker, retriever)
-runner = ExperimentRunner(writer, verifier)
+# gate=False is the pre-registered loop: the Reviser's output goes into the
+# summary whatever it says. The gated variant is Cell 10.
+runner = ExperimentRunner(writer, verifier, gate=False)
 smoke = runner.run(select_reviews("dev", n=3))
 for r in smoke:
     print(f"\n--- {r['review_id']} / {r['condition']} rounds={r['rounds']}")
@@ -163,10 +165,40 @@ print("verdict:", f"overclaims in {over:.0%} of drafts -- common enough to measu
 from medsumverify.experiment.run import ExperimentRunner, select_reviews
 
 reviews = select_reviews("dev", n=50)
-runner.run(reviews)
+runner.run(reviews)   # ungated -- `runner` was built with gate=False in Cell 7
 """
 
 # ------------------------------------------------------------- CELL 10 ----
+# The gated re-run. Everything is held constant except one thing: a rewrite
+# that comes back *stronger* than the claim it was meant to fix is retried once
+# with a note saying so, and dropped for the original if the retry strengthens
+# too. The first attempt's prompt is byte-identical to the ungated run, so any
+# difference is the gate and nothing else.
+#
+# Drafts are copied over first, so Round-0 text is identical and the comparison
+# stays paired. All three conditions run: plain costs nothing (the draft is
+# cached) and self-critique has to be redone because it shares the Reviser --
+# gating only the grounded arm would confound the gate with the grounding.
+#
+# Roughly 20 minutes at the timings from the ungated run.
+"""
+import shutil
+from pathlib import Path
+from medsumverify.experiment.run import ExperimentRunner, select_reviews
+
+gated_dir = Path("results_gated")
+gated_dir.mkdir(exist_ok=True)
+shutil.copy("results/drafts.jsonl", gated_dir / "drafts.jsonl")
+
+gated_runner = ExperimentRunner(writer, verifier, results_dir=gated_dir, gate=True)
+gated_runner.run(select_reviews("dev", n=50))
+
+from medsumverify.eval.gate_report import replay, report
+replay("results")        # what the gate would have done to the ungated run
+report(gated_dir)        # what it actually did
+"""
+
+# ------------------------------------------------------------- CELL 11 ----
 # Free the loop's models before loading the held-out judge, so the two never
 # coexist and the independence of the final score is structural, not just
 # claimed. The notebook's own variables have to go first: the registry drops
@@ -174,7 +206,7 @@ runner.run(reviews)
 # `runner` still point at the models, and nothing is released while they do.
 """
 import gc
-for name in ("runner", "verifier", "writer", "factchecker", "retriever"):
+for name in ("runner", "gated_runner", "verifier", "writer", "factchecker", "retriever"):
     globals().pop(name, None)
 from medsumverify.models.registry import get_registry, gpu_report
 get_registry().free()
@@ -182,37 +214,46 @@ gc.collect()
 print(gpu_report("freed"))
 """
 
-# ------------------------------------------------------------- CELL 11 ----
+# ------------------------------------------------------------- CELL 12 ----
 # Secondary metric: a MedNLI-trained judge from a different model family that
 # the loop can never reach (a test enforces that). Each claim is scored against
 # every included study separately and the best one counts, so no abstract is
 # cut off by BERT's 512-token window. Writes results/holdout_nli.json, which
 # the comparison below picks up on its own. A minute or two.
 """
+from pathlib import Path
 from medsumverify.eval.holdout import score_holdout
 from medsumverify.models.registry import gpu_report
-score_holdout()
+
+for d in ("results", "results_gated"):
+    if Path(d, "experiment.jsonl").exists():
+        score_holdout(results_dir=Path(d))
 print(gpu_report("held-out judge"))
 """
 
-# ------------------------------------------------------------- CELL 12 ----
+# ------------------------------------------------------------- CELL 13 ----
 # The comparison, plus the blinded audit sheet to fill in by hand. Scoring the
 # filled-in sheet happens afterwards, on your own machine:
 #     python -m medsumverify.eval.audit_sheet score
 """
+from pathlib import Path
 from medsumverify.eval.compare import compare
 from medsumverify.eval.audit_sheet import build_audit_sheet
 
 compare()
 build_audit_sheet(n_claims=60)
+
+# The gated run is a separate three-condition comparison on the same drafts.
+if Path("results_gated", "experiment.jsonl").exists():
+    compare(results_dir=Path("results_gated"))
 """
 
-# ------------------------------------------------------------- CELL 13 ----
+# ------------------------------------------------------------- CELL 14 ----
 # Persist. Download results.tar.gz from the output pane; "Save Version" also
 # keeps /kaggle/working as this version's output, which is what Cell 3's
 # restore line reads from.
 """
-!ls -la /kaggle/working/results/
-!tar czf /kaggle/working/results.tar.gz -C /kaggle/working results
+!ls -la /kaggle/working/results/ /kaggle/working/results_gated/
+!tar czf /kaggle/working/results.tar.gz -C /kaggle/working results results_gated
 print("download results.tar.gz from the output pane")
 """

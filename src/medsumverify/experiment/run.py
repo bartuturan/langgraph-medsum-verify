@@ -99,6 +99,8 @@ class ExperimentRunner:
     verifier: Verifier
     results_dir: Path | None = None
     max_rounds: int = MAX_ROUNDS
+    # Refuse a rewrite that strengthens its claim; see graph.nodes.make_reviser.
+    gate: bool = True
 
     def __post_init__(self) -> None:
         self.results_dir = Path(self.results_dir or paths().results)
@@ -117,7 +119,7 @@ class ExperimentRunner:
             return cache[review.review_id]
         state = run_condition(
             "plain", review.review_id, review.documents(), self.writer,
-            None, "", self.max_rounds,
+            None, "", self.max_rounds, gate=self.gate,
         )
         draft = state["summary"]
         cache[review.review_id] = draft
@@ -238,7 +240,7 @@ class ExperimentRunner:
                     state = run_condition(
                         condition, review.review_id, review.documents(), self.writer,
                         self.verifier if condition == "grounded" else None,
-                        draft, self.max_rounds,
+                        draft, self.max_rounds, gate=self.gate,
                     )
                     record = {
                         "review_id": review.review_id,
@@ -250,6 +252,8 @@ class ExperimentRunner:
                         "n_llm_calls": state.get("n_llm_calls", 0),
                         "history": state.get("history", []),
                         "reports": state.get("reports", []),
+                        "repairs": state.get("repairs", []),
+                        "gate": self.gate,
                         "critiques": state.get("critiques", []),
                         "seconds": round(time.time() - t0, 2),
                         # target is stored for scoring only; the loop never saw it

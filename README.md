@@ -145,13 +145,90 @@ miscalibration either way: under the signed delta, a reviser that pushed an
 already-weak claim weaker would score as a win. The switch was made on the
 evidence of this probe alone. A first 50-review comparison, under the old scorer
 and the old metric, had already been generated on Kaggle, but **no one had read
-its numbers when the choice was made**. The comparison will be reported from a
-clean rerun with the new scorer and this metric fixed in advance.
+its numbers when the choice was made**. Result 2 below is the clean rerun, with
+the new scorer and this metric fixed in advance.
 
 On all 50 experiment drafts, the first scorer's verifier raised 78 flags across
 94 claims: 57 unsupported, 14 direction, 7 overclaim. Most drafts open with "The
 evidence suggests that …", which that scorer read as "weak" whatever followed —
 the blind spot the current scorer fixes.
+
+### Result 2 — the three conditions, n=50 paired
+
+The headline is negative, and it is the pre-registered reading of the
+pre-registered metric.
+
+| | plain | selfcritique | grounded |
+|---|---|---|---|
+| **`abs_delta`** (primary; distance from the reviewer's strength, either way) | **1.095** | 1.113 | 1.327 |
+| `delta_strength` (signed; >0 = stronger than the reviewer) | −0.234 | −0.153 | +0.060 |
+| overclaim rate | 0.40 | 0.42 | 0.52 |
+| held-out judge, entailment | 0.960 | 0.967 | 0.924 |
+| direction match / content F1 | 0.38 / 0.186 | 0.40 / 0.180 | 0.40 / 0.181 |
+
+- **Grounded is worse than plain on the primary metric**: +0.232, bootstrap 95%
+  CI [+0.056, +0.415], Holm-corrected p = 0.074. Not significant; certainly not a win.
+- **It significantly strengthens claims**: signed +0.294, **Holm p = 0.029**.
+- **The held-out judge moves against it**: −0.036, CI [−0.086, −0.001], p = 0.089.
+  MiniCheck's own "unsupported" flags meanwhile fell from 57 to 33 — the in-loop
+  signal improved while an independent judge from a different model family said
+  support got *worse*. That is the circularity the design was built to catch.
+- **Self-critique is indistinguishable from plain**, so this is not the cost of
+  looping; it is the cost of what the grounding feeds the Reviser.
+- **Guardrails hold** — direction, content overlap and length are flat — so the
+  effect is not a hedging artifact in either direction.
+
+Mechanism: grounded made 18 reviews worse and 13 better. **17 of the 18 were
+triggered by MiniCheck's "unsupported" flag and only one by an overclaim flag.**
+Shown a confident single-trial sentence as "what the source trials actually
+say", the Reviser rewrites the claim to match that trial. Result 1's diagnosed
+weak point — evidence strength read off individual abstracts — is here doing
+measurable damage to the output, not just to the detector.
+
+### The Reviser gate (exploratory, added after the result above)
+
+The Reviser's instructions push one way only — *"do not hedge further than the
+evidence requires"*, with nothing forbidding the opposite. Nothing in the loop
+stops a repair from making a claim **stronger**, and that is what it does:
+
+| | grounded |
+|---|---|
+| rewrites that came out stronger / weaker | **42 / 27** (110 total) |
+| reviews ending stronger / weaker than plain | **25 / 6** |
+| of the 18 reviews the loop damaged, damaged by strengthening | **14** |
+
+CD004437 is the pattern in one line. The reviewers conclude *"we cannot
+conclude whether thrombolytic therapy is better than heparin"*; the draft says
+*"the evidence suggests … may result in"* (strength 0.94, nearly perfect); the
+grounded revision says *"The evidence shows … results in"* (3.18). MiniCheck's
+support score rose from 0.473 to 0.526 while the claim moved away from the
+reference — the loop's own signal improving as the output got worse.
+
+So the Reviser's output is now a **proposal**: it is re-scored, and if it is
+stronger than the claim it was meant to fix it is retried once with a note
+saying so, then dropped for the original if the retry strengthens too. The
+first attempt's prompt is byte-identical to the ungated run, so any difference
+is the gate alone. The gate runs in **both** revising conditions — gating only
+`grounded` would confound it with the grounding.
+
+Replaying the recorded rounds (`python -m medsumverify.eval.gate_report replay
+results`) estimates what it buys, and what it costs:
+
+| | ungated | if gated |
+|---|---|---|
+| grounded `abs_delta` | 1.327 | **1.240** |
+| selfcritique `abs_delta` | 1.113 | **1.169** |
+
+It removes the significant strengthening effect and about a third of grounded's
+calibration damage, and does **not** make grounded beat plain. It makes
+self-critique worse, which is the honest half: 30 of the 50 plain drafts already
+sit *below* the reviewer's strength, so a rule that can only weaken helps where
+the loop overshoots and costs where it was undershooting.
+
+Two caveats. The replay is an estimate — with the gate in place the second round
+would have been revising different text. And the gate was chosen *after* seeing
+the negative result, so it is exploratory; the pre-registered comparison above
+stands as it is.
 
 ## Data
 
@@ -198,9 +275,10 @@ Local, CPU, no GPU and no model downloads — the whole loop runs against fakes:
 
 ```bash
 pip install -e ".[dev,eval]"
-pytest -q                                            # 158 tests
+pytest -q                                            # 168 tests
 python -m medsumverify.eval.validate_strength        # Result 1a
 python -m medsumverify.eval.validate_verifier --fake # Result 1, CPU lower bound
+python -m medsumverify.eval.gate_report replay results   # what the gate buys
 ```
 
 On Kaggle (**GPU T4 x2**, internet on), open `notebooks/kaggle_run.ipynb`. Not
@@ -250,7 +328,8 @@ src/medsumverify/
   verify/     segment, strength (0-3), direction, verifier
   graph/      state, prompts, nodes, three LangGraph builds
   experiment/ runner with per-document JSONL checkpointing and resume
-  eval/       validate_strength, validate_verifier, metrics, compare, holdout, audit_sheet
-tests/        158 tests, all CPU
+  eval/       validate_strength, validate_verifier, metrics, compare, holdout,
+              audit_sheet, gate_report
+tests/        168 tests, all CPU
 notebooks/    kaggle_run.py (diffable) -> kaggle_run.ipynb
 ```

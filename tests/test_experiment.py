@@ -225,3 +225,15 @@ def test_run_survives_its_results_folder_disappearing(tmp_path, reviews):
     written = runner.run(reviews[:1], verbose=False)
     assert len(written) == 3 and not any("error" in r for r in written)
     assert len(load_results(d)) == 3, "results must land in the recreated folder"
+
+
+def test_records_carry_the_gate_outcome(runner, reviews):
+    """The gate's decisions have to survive to the results file to be reportable."""
+    runner.run(reviews[:1], verbose=False)
+    recs = [r for r in load_results(runner.results_dir) if r["condition"] != "plain"]
+    assert recs and all(r["gate"] is True for r in recs)
+    assert any(r["repairs"] for r in recs), "no repair was recorded for a revised summary"
+    for r in recs:
+        for rep in r["repairs"]:
+            assert rep["outcome"] in ("accepted", "retried", "rejected")
+            json.dumps(rep)

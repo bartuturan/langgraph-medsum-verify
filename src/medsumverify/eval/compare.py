@@ -267,7 +267,7 @@ def _report(out: dict) -> str:
 
     def line(d: dict | None, better: str) -> str:
         if d is None:
-            return "not run (notebook Cell 11)"
+            return "not run (notebook Cell 12)"
         return f"diff={d['mean_diff']:+.3f}  p={d['p_holm']:.4f}  ({better})"
 
     L += ["", "  verdict:",

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from medsumverify.graph.build import build_graph, run_condition
-from medsumverify.graph.nodes import parse_critique, should_continue
+from medsumverify.graph.nodes import make_reviser, parse_critique, should_continue
 from medsumverify.graph.state import CONDITIONS, initial_state
 from medsumverify.models.factcheck import FakeFactChecker
 from medsumverify.models.retriever import FakeRetriever
@@ -127,3 +129,103 @@ def test_parse_critique_is_forgiving(text, expected):
 def test_empty_draft_does_not_crash(verifier):
     out = run_condition("grounded", "CD0002", SOURCE, FakeWriter(), verifier, " ", 2)
     assert "summary" in out
+
+
+# --------------------------------------------------------------------------
+# The gate: a repair may fix a claim, but it may not strengthen it
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ScriptedReviser(FakeWriter):
+    """Returns canned revisions in order, so the gate can be driven exactly."""
+
+    revisions: tuple[str, ...] = ()
+
+    def chat(self, system, user, max_new_tokens=320, role="draft"):
+        if role != "revise":
+            return super().chat(system, user, max_new_tokens, role)
+        self.n_calls += 1
+        self.calls_by_role["revise"] = self.calls_by_role.get("revise", 0) + 1
+        i = self.calls_by_role["revise"] - 1
+        return self.revisions[min(i, len(self.revisions) - 1)]
+
+
+WEAK = "The drug may be associated with reduced mortality."
+STRONG = "The drug significantly reduces mortality."
+FLAGGED = [{"index": 0, "claim": WEAK, "reason": "unsupported", "evidence": "e"}]
+
+
+def _revise(revisions, gate=True, flags=FLAGGED, claims=None):
+    writer = ScriptedReviser(revisions=tuple(revisions))
+    state = initial_state("CD1", SOURCE, "grounded", WEAK, 2)
+    state["claims"] = list(claims or [WEAK])
+    state["flags"] = list(flags)
+    return make_reviser(writer, gate=gate)(state), writer
+
+
+def test_gate_rejects_a_rewrite_that_strengthens_its_claim():
+    out, writer = _revise([STRONG, STRONG])
+    assert out["summary"] == WEAK, "a strengthened rewrite reached the summary"
+    [repair] = out["repairs"]
+    assert repair["outcome"] == "rejected"
+    assert repair["score_final"] == repair["score_before"]
+    assert writer.calls_by_role["revise"] == 2, "the gate must retry exactly once"
+
+
+def test_gate_keeps_a_softer_second_attempt():
+    softer = "It is unclear whether the drug reduces mortality."
+    out, writer = _revise([STRONG, softer])
+    assert out["summary"] == softer
+    [repair] = out["repairs"]
+    assert repair["outcome"] == "retried"
+    assert repair["score_final"] <= repair["score_before"]
+    assert writer.calls_by_role["revise"] == 2
+
+
+def test_a_softer_first_attempt_costs_no_retry():
+    softer = "There is insufficient evidence about the drug's effect on mortality."
+    out, writer = _revise([softer, STRONG])
+    assert out["summary"] == softer
+    assert out["repairs"][0]["outcome"] == "accepted"
+    assert writer.calls_by_role["revise"] == 1, "an accepted rewrite must not be retried"
+
+
+def test_gate_allows_an_equal_strength_rewrite():
+    """A direction repair keeps the strength and swaps the claim -- not blocked."""
+    flipped = "The drug may be associated with increased mortality."
+    out, _ = _revise([flipped])
+    assert out["summary"] == flipped
+    assert out["repairs"][0]["outcome"] == "accepted"
+
+
+def test_gate_off_reproduces_the_ungated_behaviour():
+    out, writer = _revise([STRONG, STRONG], gate=False)
+    assert out["summary"] == STRONG, "gate=False must let the strengthened text through"
+    assert writer.calls_by_role["revise"] == 1
+    assert out["repairs"][0]["outcome"] == "accepted"
+
+
+def test_gate_applies_in_the_selfcritique_condition_too():
+    """Gating only the grounded arm would confound the gate with the grounding."""
+    unevidenced = [{"index": 0, "claim": WEAK, "reason": "too strong", "evidence": ""}]
+    out, _ = _revise([STRONG, STRONG], flags=unevidenced)
+    assert out["summary"] == WEAK
+    assert out["repairs"][0]["outcome"] == "rejected"
+    assert out["repairs"][0]["had_evidence"] is False
+
+
+def test_gate_leaves_unflagged_claims_alone():
+    other = "Twelve trials were included."
+    out, _ = _revise([STRONG, STRONG], claims=[WEAK, other])
+    assert out["summary"].endswith(other), "an unflagged claim was touched"
+    assert len(out["repairs"]) == 1
+
+
+def test_repairs_are_recorded_per_round_and_serialisable():
+    import json
+
+    out, _ = _revise([STRONG, STRONG])
+    assert out["repairs"][0]["round"] == 1
+    assert out["repairs"][0]["first"] == STRONG
+    json.dumps(out["repairs"])
