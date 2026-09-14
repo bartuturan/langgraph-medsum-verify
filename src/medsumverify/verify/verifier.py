@@ -33,13 +33,40 @@ from .direction import Direction, contradicts, detect_direction
 from .segment import segment
 from .strength import ClaimType, StrengthScore, score_strength
 
-__all__ = ["ClaimReport", "VerificationReport", "Verifier"]
+__all__ = ["ClaimReport", "VerificationReport", "Verifier", "relevant_sentences"]
 
 # Flag reasons, kept as constants so the Reviser prompt and the analysis code
 # cannot drift apart on spelling.
 OVERCLAIM = "overclaim"
 UNSUPPORTED = "unsupported"
 DIRECTION_FLIP = "direction_flip"
+
+
+def relevant_sentences(
+    ranked: Sequence[tuple[str, float]],
+    relevance_floor: float,
+    max_sentences: int,
+) -> list[str]:
+    """Retrieved sentences close enough to the best match to speak to the claim.
+
+    Free of `self` and of `Thresholds` so a finished run can be swept offline:
+    rebuild `ranked` as `zip(c["evidence_sentences"], c["evidence_scores"])`
+    from a recorded ClaimReport and call this with any candidate cutoffs.
+
+    Note the floor is *relative* to the best score in `ranked`, so this cannot
+    tell "three good matches" from "five equally bad ones" -- and the trailing
+    fallback guarantees a sentence comes back even when nothing is on topic.
+    Detecting that case needs an absolute floor or a per-claim background
+    comparison, neither of which is implemented here.
+    """
+    if not ranked:
+        return []
+    top = max(score for _, score in ranked)
+    if top <= 0:
+        return [ranked[0][0]]
+    floor = relevance_floor * top
+    keep = [s for s, score in ranked if score >= floor]
+    return keep[:max_sentences] or [ranked[0][0]]
 
 
 @dataclass
@@ -57,6 +84,14 @@ class ClaimReport:
     evidence_direction: str
     evidence: str
     evidence_sentences: list[str] = field(default_factory=list)
+    # Retrieval score per sentence in `evidence_sentences`, same order. Recorded
+    # so the relevance cutoffs can be re-fitted offline: `relevant_sentences()`
+    # is a pure function of these two lists plus the thresholds, so a sweep over
+    # `relevance_floor` / `max_evidence_sentences` replays from a finished run
+    # instead of re-running retrieval on a GPU per candidate value. Kept beside
+    # `evidence_sentences` rather than folded into it so runs recorded before
+    # this field existed still load.
+    evidence_scores: list[float] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     cues: list[str] = field(default_factory=list)
 
@@ -150,6 +185,7 @@ class Verifier:
     def _assess(self, index, claim, passage, ranked, support_prob) -> ClaimReport:
         cs: StrengthScore = score_strength(claim)
         ev_sentences = [s for s, _ in ranked]
+        ev_sentence_scores = [round(float(sc), 4) for _, sc in ranked]
 
         # Evidence strength is read only off the sentences that are actually
         # about this claim. Taking max over the whole top-k lets an unrelated
@@ -195,20 +231,17 @@ class Verifier:
             evidence_direction=ev_dir.label,
             evidence=passage,
             evidence_sentences=ev_sentences,
+            evidence_scores=ev_sentence_scores,
             flags=flags,
             cues=list(cs.cues),
         )
 
     def _relevant(self, ranked: Sequence[tuple[str, float]]) -> list[str]:
-        """Retrieved sentences close enough to the best match to speak to the claim."""
-        if not ranked:
-            return []
-        top = max(score for _, score in ranked)
-        if top <= 0:
-            return [ranked[0][0]]
-        floor = self.thresholds.relevance_floor * top
-        keep = [s for s, score in ranked if score >= floor]
-        return keep[: self.thresholds.max_evidence_sentences] or [ranked[0][0]]
+        return relevant_sentences(
+            ranked,
+            self.thresholds.relevance_floor,
+            self.thresholds.max_evidence_sentences,
+        )
 
     @staticmethod
     def _evidence_direction(sentences: Sequence[str]) -> Direction:

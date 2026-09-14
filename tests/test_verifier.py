@@ -94,3 +94,77 @@ def test_overall_discrimination_on_fixtures(verifier):
     )
     assert flagged_bad == n_bad, f"caught only {flagged_bad}/{n_bad} planted distortions"
     assert false_alarms == 0, f"{false_alarms} faithful claims wrongly called overclaims"
+
+
+# --------------------------------------------------------------------------
+# Retrieval scores are recorded so the relevance cutoffs can be re-fitted
+# offline instead of re-running retrieval on a GPU per candidate value.
+# --------------------------------------------------------------------------
+
+
+def test_every_evidence_sentence_carries_its_score(verifier):
+    report = verifier.verify("Aspirin reduces mortality.", [FAKE_SOURCE])
+    for c in report.claims:
+        assert len(c.evidence_scores) == len(c.evidence_sentences)
+        assert all(isinstance(s, float) for s in c.evidence_scores)
+
+
+def test_scores_are_in_retrieval_order(verifier):
+    """Descending, so `evidence_scores[0]` is the top match."""
+    report = verifier.verify("Aspirin reduces mortality.", [FAKE_SOURCE])
+    for c in report.claims:
+        assert c.evidence_scores == sorted(c.evidence_scores, reverse=True)
+
+
+def test_scores_survive_the_json_round_trip(verifier):
+    """They are only useful if they reach results/experiment.jsonl."""
+    import json
+
+    report = verifier.verify("Aspirin reduces mortality.", [FAKE_SOURCE])
+    back = json.loads(json.dumps(report.to_dict()))
+    for c in back["claims"]:
+        assert len(c["evidence_scores"]) == len(c["evidence_sentences"])
+
+
+def test_a_recorded_report_can_be_reswept_offline(verifier):
+    """The point of the field: replay `relevant_sentences` from a finished run.
+
+    Rebuilding `ranked` from the two recorded lists must reproduce exactly what
+    the verifier computed at the recorded thresholds -- otherwise an offline
+    sweep would be calibrating against something the run never did.
+    """
+    from medsumverify.verify.verifier import relevant_sentences
+
+    report = verifier.verify("Aspirin reduces mortality.", [FAKE_SOURCE])
+    th = verifier.thresholds
+    for c in report.claims:
+        ranked = list(zip(c.evidence_sentences, c.evidence_scores))
+        replayed = relevant_sentences(ranked, th.relevance_floor, th.max_evidence_sentences)
+        assert replayed == verifier._relevant(ranked)
+
+
+def test_a_tighter_floor_keeps_no_more_than_a_looser_one():
+    """What a sweep is for: the cutoff has to actually bite, monotonically."""
+    from medsumverify.verify.verifier import relevant_sentences
+
+    ranked = [("a", 0.90), ("b", 0.80), ("c", 0.55), ("d", 0.40), ("e", 0.10)]
+    prev = None
+    for floor in (0.0, 0.5, 0.7, 0.9, 1.0):
+        keep = relevant_sentences(ranked, floor, max_sentences=5)
+        if prev is not None:
+            assert len(keep) <= len(prev)
+        prev = keep
+    assert relevant_sentences(ranked, 1.0, 5) == ["a"]
+
+
+def test_the_fallback_returns_the_top_match_when_nothing_clears_the_floor():
+    """Documents the gap: abstention is not currently possible.
+
+    The floor is relative, so an all-junk retrieval still yields a sentence.
+    Pinned so that adding an absolute floor later is a deliberate change.
+    """
+    from medsumverify.verify.verifier import relevant_sentences
+
+    assert relevant_sentences([("junk", 0.02), ("worse", 0.01)], 0.6, 3) == ["junk"]
+    assert relevant_sentences([("a", 0.0), ("b", 0.0)], 0.6, 3) == ["a"]
+    assert relevant_sentences([], 0.6, 3) == []
