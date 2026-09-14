@@ -102,6 +102,10 @@ SUPPORTED_PROBE = ("Aspirin reduced mortality in older patients.", "Aspirin redu
 REFUTED_PROBE = ("Aspirin reduced mortality in older patients.", "Aspirin increases mortality.")
 _PROBE_HIGH = 0.70
 _PROBE_LOW = 0.30
+# The rescale's signature: dividing every logit by 32 pulls both probes to
+# either side of 0.5 without reordering them. A checkpoint that is broken
+# rather than rescaled does not land here.
+_RESCALE_BAND = (0.40, 0.60)
 
 
 def check_label_separation(score_fn) -> None:
@@ -175,8 +179,63 @@ class MiniCheckFactChecker:
             return tok, model
 
         self._tok, self._model = reg.get(f"factcheck:{self.model_name}", _load)
+        # The flag on the *config object* is not enough on every transformers
+        # version -- a Kaggle run with the pin in place still came back rescaled
+        # (0.5269 / 0.4636 on the probes). The forward pass reads the flag off
+        # the live model, so set it there too, then measure rather than trust.
+        try:
+            self._model.config.tie_word_embeddings = False
+        except AttributeError:
+            pass
+        self._undo_rescale_if_present()
         self.self_test()
         self._verified = True
+
+    def _probe(self) -> tuple[float, float]:
+        """P(supported) for the two probes: (should be high, should be low)."""
+        hi, lo = self._score_loaded(
+            [SUPPORTED_PROBE[0], REFUTED_PROBE[0]],
+            [SUPPORTED_PROBE[1], REFUTED_PROBE[1]],
+        )
+        return float(hi), float(lo)
+
+    def _undo_rescale_if_present(self) -> bool:
+        """Cancel a d_model**-0.5 rescale the loader could not prevent.
+
+        Some transformers versions apply T5's tied-embedding rescale whatever
+        `tie_word_embeddings` says by the time the forward pass runs -- in older
+        releases the multiply is not guarded by the flag at all. Since the
+        rescale is an exact, known, invertible constant, and we have a reliable
+        way to tell whether it happened, the honest move is to detect it and
+        fold the inverse into `lm_head` rather than ship unusable numbers.
+
+        Deliberately narrow. It fires only on the rescale's signature -- both
+        probes inside [0.40, 0.60] *and* still correctly ordered, which is what
+        dividing the logits by 32 does and what a genuinely broken checkpoint
+        does not. Anything else is left alone for `self_test` to reject, and
+        `self_test` runs afterwards either way, so a repair that did not work
+        still fails the load.
+
+        Returns True if it changed the weights. Idempotent: once repaired, the
+        probes pass and it returns early.
+        """
+        hi, lo = self._probe()
+        if hi >= _PROBE_HIGH and lo <= _PROBE_LOW:
+            return False
+        low_b, high_b = _RESCALE_BAND
+        if not (hi > lo and low_b <= hi <= high_b and low_b <= lo <= high_b):
+            return False  # broken some other way; let self_test say so
+        cfg = getattr(self._model, "config", None)
+        d_model = getattr(cfg, "d_model", None)
+        head = getattr(self._model, "lm_head", None)
+        if not d_model or head is None:
+            return False
+
+        import torch
+
+        with torch.no_grad():
+            head.weight.mul_(float(d_model) ** 0.5)
+        return True
 
     def self_test(self) -> None:
         check_label_token_ids(self._tok)

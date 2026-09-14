@@ -150,9 +150,13 @@ def test_a_passing_self_test_runs_once_and_is_remembered(monkeypatch):
     fc._score_loaded = lambda docs, claims: (calls.append(1), [0.969, 0.009])[1]
 
     fc._ensure()
+    after_first = len(calls)
     fc._ensure()
     assert fc._verified
-    assert len(calls) == 1, "self-test should not re-run once it has passed"
+    # A healthy load scores the probes twice: once for the rescale check, once
+    # for the separation guard. What matters is that a second _ensure adds none.
+    assert after_first == 2
+    assert len(calls) == after_first, "self-test should not re-run once it has passed"
     assert reg.loads == 1
 
 
@@ -171,3 +175,96 @@ def test_against_the_real_tokenizer_when_cached():
     # literal characters "</s>" -- every score depends on it.
     ids = tok(f"predict: A drug may help.{tok.eos_token}A drug helps.").input_ids
     assert ids.count(tok.eos_token_id) == 2
+
+
+# --------------------------------------------------------------------------
+# Cancelling a d_model**-0.5 rescale the loader could not prevent. Pinning the
+# config was not enough on Kaggle: the probes still came back 0.5269 / 0.4636.
+# --------------------------------------------------------------------------
+
+
+class FakeHead:
+    def __init__(self, torch, scale=1.0):
+        self.weight = torch.tensor([scale], dtype=torch.float32)
+
+
+class FakeModel:
+    """A stand-in whose probe output tracks its lm_head scale, as the real one does."""
+
+    def __init__(self, torch, logit_delta=4.0, applied_scale=1.0, d_model=1024):
+        self.config = SimpleNamespace(d_model=d_model, tie_word_embeddings=True)
+        self.lm_head = FakeHead(torch, applied_scale)
+        self.logit_delta = logit_delta
+
+    def probs(self):
+        import math
+
+        d = self.logit_delta * float(self.lm_head.weight[0])
+        hi = 1 / (1 + math.exp(-d))
+        return [hi, 1 - hi]
+
+
+def _checker_over(model):
+    from medsumverify.models.factcheck import MiniCheckFactChecker
+
+    fc = MiniCheckFactChecker()
+    fc._model = model
+    fc._tok = FakeTok(REAL_ENCODING)
+    fc._score_loaded = lambda docs, claims: model.probs()
+    return fc
+
+
+def test_a_healthy_model_is_left_alone():
+    torch = pytest.importorskip("torch")
+    m = FakeModel(torch, applied_scale=1.0)          # probes ~0.982 / ~0.018
+    fc = _checker_over(m)
+    assert fc._undo_rescale_if_present() is False
+    assert float(m.lm_head.weight[0]) == 1.0
+    fc.self_test()
+
+
+def test_the_rescale_is_detected_and_cancelled():
+    torch = pytest.importorskip("torch")
+    m = FakeModel(torch, applied_scale=1 / 32)       # exactly the Kaggle failure
+    fc = _checker_over(m)
+    hi, lo = fc._probe()
+    assert 0.40 < lo < 0.50 < hi < 0.60, "precondition: the squashed band"
+
+    assert fc._undo_rescale_if_present() is True
+    assert float(m.lm_head.weight[0]) == pytest.approx(1.0)
+    fc.self_test()                                    # now passes
+
+
+def test_the_repair_is_idempotent():
+    torch = pytest.importorskip("torch")
+    m = FakeModel(torch, applied_scale=1 / 32)
+    fc = _checker_over(m)
+    assert fc._undo_rescale_if_present() is True
+    assert fc._undo_rescale_if_present() is False     # second call is a no-op
+    assert float(m.lm_head.weight[0]) == pytest.approx(1.0)
+
+
+def test_a_differently_broken_model_is_not_silently_rescaled():
+    """The repair must not paper over a checkpoint that is wrong another way.
+
+    Inverted probes are not the rescale's signature -- dividing logits by 32
+    cannot reorder them -- so the weights are left untouched and self_test
+    rejects the load.
+    """
+    torch = pytest.importorskip("torch")
+    m = FakeModel(torch, logit_delta=-0.2, applied_scale=1.0)   # hi < lo
+    fc = _checker_over(m)
+    assert fc._undo_rescale_if_present() is False
+    assert float(m.lm_head.weight[0]) == 1.0
+    with pytest.raises(RuntimeError, match="not discriminating"):
+        fc.self_test()
+
+
+def test_a_failed_repair_still_fails_the_load():
+    """Repair is attempted, but self_test is the authority either way."""
+    torch = pytest.importorskip("torch")
+    m = FakeModel(torch, logit_delta=0.02, applied_scale=1 / 32)  # too weak to rescue
+    fc = _checker_over(m)
+    fc._undo_rescale_if_present()
+    with pytest.raises(RuntimeError, match="not discriminating"):
+        fc.self_test()
