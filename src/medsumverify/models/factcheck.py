@@ -26,11 +26,25 @@ number downstream. (An earlier version instead checked that the ids *spell*
 The d_model**-0.5 trap
 ----------------------
 `T5ForConditionalGeneration` multiplies the decoder output by
-`d_model ** -0.5` before the lm_head **when `config.tie_word_embeddings` is
-true**. MiniCheck's config says true, but the checkpoint carries its own
+`d_model ** -0.5` before the lm_head when `config.tie_word_embeddings` is
+true. MiniCheck's config says true, but the checkpoint carries its own
 fine-tuned `lm_head.weight`, so the two disagree and the installed
-transformers version decides what happens. transformers 5.17 notices the
-conflict, refuses to tie, and skips the rescale; older versions applied it.
+transformers version decides what happens.
+
+Measured, not assumed, on both sides:
+
+    transformers 5.17.0   notices the conflict ("both are present in the
+                          checkpoints with different values, so we will NOT
+                          tie them"), skips the rescale, scores correctly
+    transformers 5.0.0    rescales anyway, and does so even when
+                          tie_word_embeddings is pinned False on the config
+                          passed to from_pretrained
+
+So this is not the 4.x/5.x boundary it looks like -- it moved somewhere
+inside the 5.x line, and the exact release was not chased down. That is
+precisely why the loader measures the outcome instead of testing a version:
+pinning the config is kept as belt-and-braces but is known *not* to be
+sufficient, and `_undo_rescale_if_present` is what actually carries it.
 
 For flan-t5-large, d_model is 1024, so the rescale divides every logit by
 exactly 32. Softmax over two logits then returns `sigmoid(delta / 32)`, which
@@ -46,9 +60,9 @@ was the *magnitude*: `tau_support` could only ever be 0.5 (0.4 flags nothing,
 0.6 flags everything), and the probability quoted to the Reviser in
 `ClaimReport.reason()` was meaningless.
 
-So the config is pinned at load, and `check_label_separation()` verifies the
-outcome rather than the mechanism -- the mechanism is the part that changed
-under us once already.
+So the config is pinned at load, the rescale is detected and undone if it
+happened anyway, and `check_label_separation()` verifies the outcome rather
+than the mechanism -- the mechanism is the part that changed under us twice.
 """
 
 from __future__ import annotations
@@ -168,9 +182,10 @@ class MiniCheckFactChecker:
             # MiniCheck ships a separately fine-tuned lm_head but its config
             # still says tie_word_embeddings=True, and T5 reads that flag to
             # decide whether to rescale the decoder output by d_model**-0.5.
-            # Pinning it False is the fix; `check_label_separation` below is
-            # the net, because which of the two a given transformers version
-            # does is exactly what changed under us. See the module docstring.
+            # Pinning it False is necessary but NOT sufficient -- transformers
+            # 5.0.0 rescales regardless, which is what the Kaggle run hit. The
+            # real safety net is `_undo_rescale_if_present` plus
+            # `check_label_separation`. See the module docstring.
             cfg.tie_word_embeddings = False
             model = AutoModelForSeq2SeqLM.from_pretrained(
                 self.model_name, config=cfg, **dtype_kwargs(preferred_dtype())
